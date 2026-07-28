@@ -1,36 +1,123 @@
 /* verify.behavry.ai
-   Restrained on purpose. This page is read by auditors and regulators deciding
-   whether to believe a cryptographic claim; visual confidence must come from
-   the result being legible, not from decoration. The only saturated colour on
-   the page is the verdict. */
+   Brand tokens from Behavry Brand Tokens v2f (dashboard/public/brand/
+   brand-tokens.css) and the dashboard's own theme (dashboard/src/tokens.css):
+   navy ink, amber accent, Inter + JetBrains Mono.
+
+   Fonts are self-hosted rather than pulled from Google. This page's whole
+   argument is that you do not have to trust anyone to use it, so it loads no
+   third-party asset and its CSP is default-src 'self'. */
+
+/* ─── Typeface ───────────────────────────────────────────────────────────── */
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/static/fonts/inter-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/static/fonts/inter-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/static/fonts/inter-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/static/fonts/inter-latin-700-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/static/fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/static/fonts/jetbrains-mono-latin-500-normal.woff2') format('woff2');
+}
+
+/* ─── Tokens ─────────────────────────────────────────────────────────────── */
 
 :root {
-  --bg: #ffffff;
-  --surface: #f7f8f9;
-  --border: #e2e5e9;
-  --text: #14181d;
-  --muted: #5c6673;
-  --accent: #0f6f6b;
-  --pass: #0f7a4d;
+  /* Brand palette (v2f) */
+  --navy-900: #060e1c;
+  --navy-800: #0a1628;
+  --navy-700: #0f2040;
+  --navy-600: #152b55;
+  --navy-500: #1b2a4a;
+  --navy-400: #243a64;
+  --amber-600: #a87322;
+  --amber-500: #c8922a;
+  --amber-400: #d4a843;
+  --amber-100: #f5e4b2;
+
+  /* Light surfaces: the dashboard's warm paper, not plain white */
+  --bg: #f5f5f0;
+  --surface: #ffffff;
+  --surface-2: #eaeae5;
+  --border: #c8c8c0;
+  --text: var(--navy-800);
+  --muted: #5c5c66;
+
+  --accent: var(--amber-500);
+  --accent-ink: var(--navy-800);
+  --link: var(--amber-600);
+
+  /* Status: darkened for contrast on paper */
+  --pass: #15803d;
   --fail: #b42318;
-  --warn: #a15c07;
-  --skip: #6b7480;
-  --radius: 10px;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --warn: var(--amber-600);
+  --skip: #6b7280;
+
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 16px;
+  --shadow-sm: 0 1px 3px rgba(10, 22, 40, 0.15);
+  --shadow-md: 0 4px 16px rgba(10, 22, 40, 0.18);
+
+  --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, monospace;
+
+  color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0d1013;
-    --surface: #151a1f;
-    --border: #262d35;
-    --text: #e8ecf0;
-    --muted: #94a0ad;
-    --accent: #4fd1c5;
-    --pass: #3ecf8e;
+    /* Navy canvas, following the dashboard's three-layer luminance ladder */
+    --bg: var(--navy-800);
+    --surface: var(--navy-700);
+    --surface-2: var(--navy-600);
+    --border: var(--navy-400);
+    --text: #e6e8ee;
+    --muted: #8fa0bc;
+
+    --accent: var(--amber-400);
+    --accent-ink: var(--navy-900);
+    --link: var(--amber-400);
+
+    --pass: #22c55e;
     --fail: #ff6b5e;
-    --warn: #e8a33d;
+    --warn: var(--amber-400);
     --skip: #7d8894;
+
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
   }
 }
 
@@ -40,68 +127,105 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  font: 400 16px/1.6 var(--sans);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-.wrap { width: min(760px, 100% - 2.5rem); margin-inline: auto; }
+.wrap { width: min(780px, 100% - 2.5rem); margin-inline: auto; }
+
+/* ─── Chrome ─────────────────────────────────────────────────────────────── */
 
 header.site {
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
-  padding: 1rem 0;
+  padding: 0.875rem 0;
   margin-bottom: 3rem;
 }
-header.site .wrap { display: flex; align-items: baseline; gap: 0.75rem; }
-.mark { font-weight: 650; letter-spacing: -0.01em; }
-.sub { color: var(--muted); font-size: 0.875rem; }
+header.site .wrap { display: flex; align-items: center; gap: 0.875rem; }
+
+/* The horizontal lockup carries a tagline under the wordmark; below ~36px it
+   turns to mush, so this is a floor, not a preference. */
+.logo { display: block; height: 38px; width: auto; }
+.logo-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  .logo-light { display: none; }
+  .logo-dark { display: block; }
+}
+
+.sub {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  padding-left: 0.875rem;
+  border-left: 1px solid var(--border);
+}
 
 footer.site {
   border-top: 1px solid var(--border);
   margin-top: 4rem;
   padding: 1.5rem 0 3rem;
 }
-footer.site .wrap { display: flex; gap: 1.5rem; }
-footer.site a { color: var(--muted); font-size: 0.875rem; }
+footer.site .wrap { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+footer.site a { color: var(--muted); font-size: 0.875rem; text-decoration: none; }
+footer.site a:hover { color: var(--link); text-decoration: underline; }
 
-a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 2px; }
 
 h1 {
-  font-size: clamp(1.75rem, 4vw, 2.25rem);
-  line-height: 1.2;
-  letter-spacing: -0.02em;
+  font-size: clamp(1.75rem, 4vw, 2.375rem);
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  font-weight: 700;
   margin: 0 0 0.75rem;
 }
-h2 { font-size: 1.125rem; letter-spacing: -0.01em; margin: 0 0 0.75rem; }
+h2 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.75rem;
+}
 
 .hero { margin-bottom: 2rem; }
-.lede { color: var(--muted); font-size: 1.0625rem; margin: 0 0 1rem; max-width: 60ch; }
+.lede { color: var(--muted); font-size: 1.0625rem; margin: 0 0 1.25rem; max-width: 62ch; }
+
 .privacy {
   font-size: 0.9375rem;
   color: var(--muted);
-  border-left: 2px solid var(--accent);
-  padding-left: 0.875rem;
+  border-left: 3px solid var(--accent);
+  padding: 0.125rem 0 0.125rem 0.875rem;
   margin: 0;
 }
-.privacy strong { color: var(--text); }
+.privacy strong { color: var(--text); font-weight: 600; }
 
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
   padding: 1.5rem;
   margin-bottom: 1.5rem;
 }
+
+/* ─── Form ───────────────────────────────────────────────────────────────── */
 
 .field { margin-bottom: 1.5rem; }
 label { display: block; font-weight: 600; font-size: 0.9375rem; margin-bottom: 0.25rem; }
 .opt {
   font-weight: 500;
-  font-size: 0.75rem;
-  color: var(--accent);
-  border: 1px solid currentColor;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--amber-600);
+  background: var(--amber-100);
   border-radius: 999px;
-  padding: 0.05rem 0.5rem;
-  vertical-align: 1px;
+  padding: 0.15rem 0.5rem;
+  vertical-align: 2px;
+}
+@media (prefers-color-scheme: dark) {
+  .opt { color: var(--amber-400); background: rgba(212, 168, 67, 0.16); }
 }
 .hint { color: var(--muted); font-size: 0.875rem; margin: 0 0 0.625rem; }
 
@@ -113,49 +237,64 @@ label { display: block; font-weight: 600; font-size: 0.9375rem; margin-bottom: 0
   text-align: center;
   transition: border-color 0.15s, background 0.15s;
 }
-.drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
-.drop.filled { border-style: solid; border-color: var(--accent); }
-.drop input[type=file] { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
-#drop-label { margin: 0; color: var(--muted); font-size: 0.9375rem; }
-
-input[type=file]:not(.drop input) {
-  width: 100%;
-  font-size: 0.875rem;
-  color: var(--muted);
+.drop.over { border-color: var(--accent); background: rgba(212, 168, 67, 0.08); }
+.drop.filled {
+  border-style: solid;
+  border-color: var(--accent);
+  background: rgba(212, 168, 67, 0.06);
 }
+.drop input[type=file] {
+  position: absolute; inset: 0; opacity: 0;
+  width: 100%; height: 100%; cursor: pointer;
+}
+#drop-label { margin: 0; color: var(--muted); font-size: 0.9375rem; }
+.drop.filled #drop-label {
+  color: var(--text);
+  font-weight: 500;
+  font-family: var(--mono);
+  font-size: 0.875rem;
+}
+
+input[type=file]:not(.drop input) { width: 100%; font-size: 0.875rem; color: var(--muted); }
 
 button {
   width: 100%;
-  padding: 0.75rem 1rem;
-  font: inherit;
-  font-weight: 600;
-  color: #fff;
+  padding: 0.8125rem 1rem;
+  font: 600 1rem var(--sans);
+  color: var(--accent-ink);
   background: var(--accent);
   border: none;
   border-radius: var(--radius);
   cursor: pointer;
+  transition: filter 0.15s;
 }
-button:hover:not(:disabled) { filter: brightness(1.08); }
+button:hover:not(:disabled) { filter: brightness(1.07); }
 button:disabled { opacity: 0.55; cursor: progress; }
 
 .status { margin: 0.75rem 0 0; font-size: 0.875rem; color: var(--muted); min-height: 1.25rem; }
 .status.error { color: var(--fail); }
 
-/* -- verdict -------------------------------------------------------------- */
+/* ─── Verdict ────────────────────────────────────────────────────────────── */
 
 .result { margin-bottom: 1.5rem; }
 
 .verdict {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  border-left-width: 4px;
-  padding: 1.25rem 1.5rem;
   background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  padding: 1.375rem 1.5rem;
 }
 .verdict.pass { border-left-color: var(--pass); }
 .verdict.fail { border-left-color: var(--fail); }
 
-.verdict h2 { font-size: 1.25rem; margin: 0 0 0.25rem; }
+.verdict h2 {
+  font-size: 1.3125rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.25rem;
+}
 .verdict.pass h2 { color: var(--pass); }
 .verdict.fail h2 { color: var(--fail); }
 .verdict .summary { color: var(--muted); font-size: 0.9375rem; margin: 0; }
@@ -165,21 +304,34 @@ button:disabled { opacity: 0.55; cursor: progress; }
   display: grid;
   grid-template-columns: 1.25rem 1fr;
   gap: 0.625rem;
-  padding: 0.5rem 0;
+  padding: 0.5625rem 0;
   border-top: 1px solid var(--border);
   font-size: 0.9375rem;
 }
 .glyph { font-weight: 700; line-height: 1.5; }
-.pass .glyph, li.pass .glyph { color: var(--pass); }
+li.pass .glyph { color: var(--pass); }
 li.fail .glyph { color: var(--fail); }
 li.warn .glyph { color: var(--warn); }
 li.skipped .glyph { color: var(--skip); }
 li.skipped .label { color: var(--muted); }
-.label { font-weight: 550; }
-.detail { color: var(--muted); font-size: 0.8125rem; margin-top: 0.125rem; word-break: break-word; }
+.label { font-weight: 600; }
+.detail {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-family: var(--mono);
+  line-height: 1.5;
+  margin-top: 0.1875rem;
+  word-break: break-word;
+}
 
 .meta { margin: 1.25rem 0 0; border-top: 1px solid var(--border); padding-top: 1rem; }
-.meta div { display: grid; grid-template-columns: 11rem 1fr; gap: 0.75rem; padding: 0.25rem 0; font-size: 0.875rem; }
+.meta div {
+  display: grid;
+  grid-template-columns: 11rem 1fr;
+  gap: 0.75rem;
+  padding: 0.25rem 0;
+  font-size: 0.875rem;
+}
 .meta dt { color: var(--muted); }
 .meta dd { margin: 0; font-family: var(--mono); font-size: 0.8125rem; word-break: break-all; }
 
@@ -188,18 +340,23 @@ li.skipped .label { color: var(--muted); }
   padding: 0.875rem 1rem;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   font-size: 0.875rem;
   color: var(--muted);
 }
 
-/* -- prose ---------------------------------------------------------------- */
+/* ─── Prose ──────────────────────────────────────────────────────────────── */
 
 .prose p { color: var(--muted); font-size: 0.9375rem; }
 .prose dl { margin: 1rem 0 0; }
 .prose dt { font-weight: 600; font-size: 0.9375rem; margin-top: 0.875rem; }
 .prose dd { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.9375rem; }
-.prose .note { font-size: 0.875rem; border-top: 1px solid var(--border); padding-top: 0.875rem; margin-top: 1.25rem; }
+.prose .note {
+  font-size: 0.875rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.875rem;
+  margin-top: 1.25rem;
+}
 
 .tag {
   font-size: 0.6875rem;
@@ -208,18 +365,20 @@ li.skipped .label { color: var(--muted); }
   letter-spacing: 0.04em;
   border-radius: 999px;
   padding: 0.1rem 0.5rem;
-  vertical-align: 1px;
+  vertical-align: 2px;
 }
-.tag.strong { color: var(--pass); background: color-mix(in srgb, var(--pass) 14%, transparent); }
-.tag.weak { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.tag.strong { color: var(--pass); background: rgba(34, 197, 94, 0.14); }
+.tag.weak { color: var(--warn); background: rgba(212, 168, 67, 0.18); }
 
 code { font-family: var(--mono); font-size: 0.875em; }
 pre {
-  background: var(--bg);
+  background: var(--navy-800);
+  color: #e6e8ee;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 0.875rem 1rem;
   overflow-x: auto;
   font-size: 0.8125rem;
+  line-height: 1.6;
 }
 pre code { font-size: inherit; }

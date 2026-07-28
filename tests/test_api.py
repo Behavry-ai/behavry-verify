@@ -189,3 +189,31 @@ def test_swagger_ui_is_disabled(client):
     blocks and whose trust posture it contradicts. The schema stays self-hosted."""
     assert client.get("/api/docs").status_code == 404
     assert client.get("/api/openapi.json").status_code == 200
+
+
+@pytest.mark.parametrize(
+    "asset",
+    [
+        "/static/styles.css",
+        "/static/app.js",
+        "/static/brand/behavry-horizontal-light.svg",
+        "/static/brand/behavry-horizontal-dark.svg",
+        "/static/brand/favicon.svg",
+        "/static/fonts/inter-latin-400-normal.woff2",
+        "/static/fonts/inter-latin-600-normal.woff2",
+        "/static/fonts/inter-latin-700-normal.woff2",
+        "/static/fonts/jetbrains-mono-latin-400-normal.woff2",
+    ],
+)
+def test_brand_assets_are_served(client, asset):
+    """Brand and font files are vendored, not fetched from a CDN, so a missing
+    one degrades silently to a system font or a broken image unless caught."""
+    assert client.get(asset).status_code == 200
+
+
+def test_page_loads_no_third_party_assets(client):
+    """The CSP is default-src 'self'; anything remote would simply not load."""
+    html = client.get("/").text
+    assert "http://" not in html
+    for remote in ("https://fonts.googleapis.com", "https://cdn.", "https://fonts.gstatic.com"):
+        assert remote not in html
