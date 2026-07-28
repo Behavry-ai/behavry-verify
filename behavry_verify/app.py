@@ -42,7 +42,14 @@ app = FastAPI(
         "account, no tenant access, and no database required. Nothing "
         "submitted here is stored."
     ),
-    docs_url="/api/docs",
+    # Swagger UI is deliberately off. It loads its assets from a third-party
+    # CDN, which this page's CSP blocks and which would, on a site whose whole
+    # argument is "you do not have to trust anyone here", mean pulling script
+    # from a host neither we nor the auditor controls. The schema itself is
+    # self-hosted and machine-readable; the README documents the three
+    # endpoints for humans.
+    docs_url=None,
+    redoc_url=None,
     openapi_url="/api/openapi.json",
 )
 

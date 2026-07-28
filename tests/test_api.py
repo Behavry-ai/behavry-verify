@@ -182,3 +182,10 @@ def test_url_endpoint_surfaces_the_refusal(client):
         "/api/v1/verify", data={"package_url": "https://169.254.169.254/apr.zip"}
     )
     assert response.status_code == 400
+
+
+def test_swagger_ui_is_disabled(client):
+    """The docs UI pulls script from a third-party CDN, which this site's CSP
+    blocks and whose trust posture it contradicts. The schema stays self-hosted."""
+    assert client.get("/api/docs").status_code == 404
+    assert client.get("/api/openapi.json").status_code == 200
