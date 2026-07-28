@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verify a Behavry evidence package</title>
+<meta name="description" content="Independently verify a Behavry APR evidence package. No account, no upload retention, no Behavry in the loop.">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>&#128737;</text></svg>">
+</head>
+<body>
+<header class="site">
+  <div class="wrap">
+    <span class="mark">Behavry</span>
+    <span class="sub">Evidence verification</span>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section class="hero">
+    <h1>Verify an evidence package</h1>
+    <p class="lede">
+      Confirm that a Behavry evidence package is exactly what was signed, and that
+      no event was altered, removed, or reordered. No account, no tenant access,
+      no database.
+    </p>
+    <p class="privacy">
+      <strong>Nothing you submit is stored.</strong> The package is verified in memory
+      and discarded. It is never logged or forwarded.
+    </p>
+  </section>
+
+  <form id="form" class="card">
+    <div class="field">
+      <label for="package">Evidence package</label>
+      <p class="hint">The <code>.zip</code> exported from a Behavry APR.</p>
+      <div id="drop" class="drop">
+        <input type="file" id="package" name="package" accept=".zip,application/zip" required>
+        <p id="drop-label">Drop the <code>.zip</code> here, or choose a file</p>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="anchor">Trust anchor <span class="opt">recommended</span></label>
+      <p class="hint">
+        The issuing tenant's <code>behavry-trust-anchor.json</code>. Supplying it is
+        what makes the result independent of Behavry. See
+        <a href="#trust">why this matters</a>.
+      </p>
+      <input type="file" id="anchor" name="anchor" accept=".json,application/json">
+    </div>
+
+    <button type="submit" id="submit">Verify package</button>
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+  </form>
+
+  <section id="result" class="result" hidden></section>
+
+  <section id="trust" class="card prose">
+    <h2>What the result is worth</h2>
+    <p>
+      Verification is only as good as the key it checks against. There are three ways
+      to supply one and they are <em>not</em> equally strong. Every report says which
+      one it used.
+    </p>
+    <dl>
+      <dt>You supply the tenant's trust anchor <span class="tag strong">strongest</span></dt>
+      <dd>The package was signed by the key the tenant handed you out-of-band. Behavry is not in the loop.</dd>
+
+      <dt>The published registry <span class="tag weak">convenience only</span></dt>
+      <dd>
+        If you supply no anchor, we look the signing key up in
+        <a href="/trust-anchor.json">our published registry</a>. That confirms the package
+        is internally consistent and signed by the named key, but the key came from
+        Behavry. This is Behavry vouching for Behavry. If the result matters, get the
+        anchor from the issuing tenant.
+      </dd>
+    </dl>
+    <p class="note">
+      An evidence package does not contain the key needed to verify it. It carries only a
+      truncated fingerprint, so you can confirm you are holding the right anchor.
+    </p>
+  </section>
+
+  <section class="card prose">
+    <h2>Verify offline instead</h2>
+    <p>
+      The same checks, on your own machine, with no network and one dependency.
+      This is the air-gapped path, and it is the one to use when the package is
+      sensitive enough that you would rather not hand it to anyone at all.
+    </p>
+    <pre><code>pipx install behavry-verify
+
+behavry-verify --package apr-APR-2026-001942.zip \
+               --trust-anchor behavry-trust-anchor.json</code></pre>
+    <p>
+      Exit codes are <code>0</code> verified, <code>1</code> not verified,
+      <code>2</code> unusable input, so it drops straight into CI.
+    </p>
+  </section>
+
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <a href="https://github.com/Behavry-ai/behavry-verify">Source</a>
+    <a href="/api/docs">API</a>
+    <a href="/trust-anchor.json">Published anchors</a>
+  </div>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

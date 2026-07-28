@@ -1,0 +1,22 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.vercel
+.env
+.env.*
+.DS_Store
+
+# Never commit real evidence packages or exported anchors used for local
+# testing — they are customer audit trails.
+*.zip
+apr-*/
+behavry-trust-anchor*.json
+!anchors/*.json

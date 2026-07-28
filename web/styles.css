@@ -1,0 +1,225 @@
+/* verify.behavry.ai
+   Restrained on purpose. This page is read by auditors and regulators deciding
+   whether to believe a cryptographic claim; visual confidence must come from
+   the result being legible, not from decoration. The only saturated colour on
+   the page is the verdict. */
+
+:root {
+  --bg: #ffffff;
+  --surface: #f7f8f9;
+  --border: #e2e5e9;
+  --text: #14181d;
+  --muted: #5c6673;
+  --accent: #0f6f6b;
+  --pass: #0f7a4d;
+  --fail: #b42318;
+  --warn: #a15c07;
+  --skip: #6b7480;
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1013;
+    --surface: #151a1f;
+    --border: #262d35;
+    --text: #e8ecf0;
+    --muted: #94a0ad;
+    --accent: #4fd1c5;
+    --pass: #3ecf8e;
+    --fail: #ff6b5e;
+    --warn: #e8a33d;
+    --skip: #7d8894;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { width: min(760px, 100% - 2.5rem); margin-inline: auto; }
+
+header.site {
+  border-bottom: 1px solid var(--border);
+  padding: 1rem 0;
+  margin-bottom: 3rem;
+}
+header.site .wrap { display: flex; align-items: baseline; gap: 0.75rem; }
+.mark { font-weight: 650; letter-spacing: -0.01em; }
+.sub { color: var(--muted); font-size: 0.875rem; }
+
+footer.site {
+  border-top: 1px solid var(--border);
+  margin-top: 4rem;
+  padding: 1.5rem 0 3rem;
+}
+footer.site .wrap { display: flex; gap: 1.5rem; }
+footer.site a { color: var(--muted); font-size: 0.875rem; }
+
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+h1 {
+  font-size: clamp(1.75rem, 4vw, 2.25rem);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.75rem;
+}
+h2 { font-size: 1.125rem; letter-spacing: -0.01em; margin: 0 0 0.75rem; }
+
+.hero { margin-bottom: 2rem; }
+.lede { color: var(--muted); font-size: 1.0625rem; margin: 0 0 1rem; max-width: 60ch; }
+.privacy {
+  font-size: 0.9375rem;
+  color: var(--muted);
+  border-left: 2px solid var(--accent);
+  padding-left: 0.875rem;
+  margin: 0;
+}
+.privacy strong { color: var(--text); }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.field { margin-bottom: 1.5rem; }
+label { display: block; font-weight: 600; font-size: 0.9375rem; margin-bottom: 0.25rem; }
+.opt {
+  font-weight: 500;
+  font-size: 0.75rem;
+  color: var(--accent);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  vertical-align: 1px;
+}
+.hint { color: var(--muted); font-size: 0.875rem; margin: 0 0 0.625rem; }
+
+.drop {
+  position: relative;
+  border: 1.5px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 1.75rem 1rem;
+  text-align: center;
+  transition: border-color 0.15s, background 0.15s;
+}
+.drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.drop.filled { border-style: solid; border-color: var(--accent); }
+.drop input[type=file] { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+#drop-label { margin: 0; color: var(--muted); font-size: 0.9375rem; }
+
+input[type=file]:not(.drop input) {
+  width: 100%;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+button {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+button:hover:not(:disabled) { filter: brightness(1.08); }
+button:disabled { opacity: 0.55; cursor: progress; }
+
+.status { margin: 0.75rem 0 0; font-size: 0.875rem; color: var(--muted); min-height: 1.25rem; }
+.status.error { color: var(--fail); }
+
+/* -- verdict -------------------------------------------------------------- */
+
+.result { margin-bottom: 1.5rem; }
+
+.verdict {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  border-left-width: 4px;
+  padding: 1.25rem 1.5rem;
+  background: var(--surface);
+}
+.verdict.pass { border-left-color: var(--pass); }
+.verdict.fail { border-left-color: var(--fail); }
+
+.verdict h2 { font-size: 1.25rem; margin: 0 0 0.25rem; }
+.verdict.pass h2 { color: var(--pass); }
+.verdict.fail h2 { color: var(--fail); }
+.verdict .summary { color: var(--muted); font-size: 0.9375rem; margin: 0; }
+
+.checks { list-style: none; margin: 1.25rem 0 0; padding: 0; }
+.checks li {
+  display: grid;
+  grid-template-columns: 1.25rem 1fr;
+  gap: 0.625rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.9375rem;
+}
+.glyph { font-weight: 700; line-height: 1.5; }
+.pass .glyph, li.pass .glyph { color: var(--pass); }
+li.fail .glyph { color: var(--fail); }
+li.warn .glyph { color: var(--warn); }
+li.skipped .glyph { color: var(--skip); }
+li.skipped .label { color: var(--muted); }
+.label { font-weight: 550; }
+.detail { color: var(--muted); font-size: 0.8125rem; margin-top: 0.125rem; word-break: break-word; }
+
+.meta { margin: 1.25rem 0 0; border-top: 1px solid var(--border); padding-top: 1rem; }
+.meta div { display: grid; grid-template-columns: 11rem 1fr; gap: 0.75rem; padding: 0.25rem 0; font-size: 0.875rem; }
+.meta dt { color: var(--muted); }
+.meta dd { margin: 0; font-family: var(--mono); font-size: 0.8125rem; word-break: break-all; }
+
+.caveat {
+  margin: 1.25rem 0 0;
+  padding: 0.875rem 1rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+/* -- prose ---------------------------------------------------------------- */
+
+.prose p { color: var(--muted); font-size: 0.9375rem; }
+.prose dl { margin: 1rem 0 0; }
+.prose dt { font-weight: 600; font-size: 0.9375rem; margin-top: 0.875rem; }
+.prose dd { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.9375rem; }
+.prose .note { font-size: 0.875rem; border-top: 1px solid var(--border); padding-top: 0.875rem; margin-top: 1.25rem; }
+
+.tag {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  vertical-align: 1px;
+}
+.tag.strong { color: var(--pass); background: color-mix(in srgb, var(--pass) 14%, transparent); }
+.tag.weak { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+
+code { font-family: var(--mono); font-size: 0.875em; }
+pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.875rem 1rem;
+  overflow-x: auto;
+  font-size: 0.8125rem;
+}
+pre code { font-size: inherit; }
