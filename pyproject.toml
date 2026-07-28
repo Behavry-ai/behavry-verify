@@ -24,6 +24,12 @@ classifiers = [
 dependencies = ["cryptography>=42.0"]
 
 [project.optional-dependencies]
+# NOTE: Vercel's Python builder installs `[project.dependencies]` from this
+# file and ignores requirements.txt. Because the service deps live in this
+# extra rather than in the base list, vercel.json MUST carry
+# `"installCommand": "pip install '.[service]'"`. Drop that line and the
+# deployed function builds fine but 500s on every request with an ImportError
+# on fastapi. Keep the two in sync.
 service = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
