@@ -123,4 +123,6 @@ Anchors in `anchors/*.json` are served from `/trust-anchor.json`. They are commi
 
 ## License
 
-Apache-2.0.
+Source code is Apache-2.0.
+
+The bundled fonts in `web/fonts/` are SIL OFL 1.1, and the Behavry name and logo are trademarks that the code license does not grant. If you fork this and run your own verifier, replace the branding. See [NOTICE.md](NOTICE.md).
