@@ -2,7 +2,11 @@
 
 ## This project
 
-Source code in this repository is licensed under Apache-2.0. See [LICENSE](LICENSE).
+behavry-verify
+
+Copyright 2026 Behavry
+
+Source code in this repository is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE). You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0.
 
 ## Bundled fonts
 
