@@ -4,7 +4,7 @@
 
 behavry-verify
 
-Copyright 2026 Behavry
+Copyright 2026 Behavry Inc.
 
 Source code in this repository is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE). You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0.
 
@@ -21,6 +21,6 @@ If you fork this repository and keep the fonts, you must keep those license file
 
 ## Trademarks
 
-"Behavry", the Behavry name, and the logo files in `web/brand/` are trademarks of Behavry. The Apache-2.0 license covers the source code and **does not** grant permission to use the Behavry name or marks.
+"Behavry", the Behavry name, and the logo files in `web/brand/` are trademarks of Behavry Inc. The Apache-2.0 license covers the source code and **does not** grant permission to use the Behavry name or marks.
 
 You may fork this code and run your own verifier. If you do, replace the contents of `web/brand/` and the product name in `web/index.html` with your own, so that no one mistakes your deployment for one operated by Behavry. This matters more than usual here: the whole point of this service is telling someone whether a piece of evidence is authentic, and a verifier that appears to be Behavry's but is not would undermine exactly the trust it exists to establish.

@@ -5,11 +5,11 @@ build-backend = "hatchling.build"
 [project]
 name = "behavry-verify"
 version = "0.1.0"
-description = "Independently verify Behavry APR evidence packages — offline, with no Behavry account."
+description = "Independently verify Behavry APR evidence packages offline, with no Behavry account."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Behavry" }]
+authors = [{ name = "Behavry Inc." }]
 keywords = ["behavry", "audit", "verification", "provenance", "ed25519", "merkle"]
 classifiers = [
   "Development Status :: 4 - Beta",
