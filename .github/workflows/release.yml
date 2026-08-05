@@ -1,0 +1,75 @@
+name: Release
+
+# Publishing is deliberately tag-driven and manual to start: a version on PyPI
+# can never be replaced or reused, so the trigger is an explicit act, not a
+# side effect of merging.
+#
+# ONE-TIME SETUP, required before the first successful run — the publish step
+# uses PyPI Trusted Publishing (OIDC), so there is no API token in this repo
+# and no secret to leak or rotate. On https://pypi.org, add a pending trusted
+# publisher for the project `behavry-verify` with:
+#     owner        Behavry-ai
+#     repository   behavry-verify
+#     workflow     release.yml
+#     environment  pypi
+# Then create the `pypi` environment in this repo's settings (protection rules
+# there are what gate who can actually cut a release).
+#
+# To release: bump `version` in pyproject.toml, merge, then push a matching
+# tag — `git tag v0.2.0 && git push origin v0.2.0`. The guard below refuses to
+# publish if the tag and pyproject disagree, so a mistyped tag fails loudly
+# instead of shipping a mislabelled artifact.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Re-run the suite against the exact commit being shipped. CI already ran
+      # on main, but a tag can point anywhere, and this artifact is what an
+      # auditor uses to decide whether to trust an evidence package.
+      - run: pip install -e ".[service,dev]"
+      - run: ruff check .
+      - run: pytest -q
+
+      - name: Tag must match pyproject version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag does not match pyproject version $pkg"
+            exit 1
+          fi
+          echo "releasing $pkg"
+
+      - run: pip install build && python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # OIDC for Trusted Publishing; no PyPI token needed
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
