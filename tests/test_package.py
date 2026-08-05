@@ -242,6 +242,95 @@ def test_chain_walk_reports_every_break():
     assert len(breaks) == 2
 
 
+# ---------------------------------------------------------------------------
+# Contiguity applies to pre-1.1 packages only
+# ---------------------------------------------------------------------------
+
+
+def test_agentless_package_fails_the_walk_under_1_0():
+    """The defect 1.1 corrects, pinned as a control.
+
+    Browser / Human Governance events carry no agent_id and therefore no link
+    pointer. Under 1.0 they share one chain key, so every event after the first
+    reports a break — an intact session declared tampered.
+    """
+    builder = PackageBuilder(event_count=3, agentless=True, package_version="1.0")
+    report = verify(builder.components(), builder.anchor())
+    assert status_of(report, "chain") is CheckStatus.FAIL
+    assert not report.verified
+
+
+def test_agentless_package_verifies_under_1_1():
+    """The same events, exported by a 1.1 producer, verify."""
+    builder = PackageBuilder(event_count=3, agentless=True, package_version="1.1")
+    report = verify(builder.components(), builder.anchor())
+    assert status_of(report, "chain") is CheckStatus.SKIPPED
+    assert report.verified
+
+
+def test_interleaved_sessions_verify_under_1_1():
+    """An agent running concurrent sessions interleaves its chain, so a
+    session-scoped package's events link to rows it does not contain."""
+    builder = PackageBuilder(event_count=4, package_version="1.1")
+    for index, event in enumerate(builder.events):
+        event["previous_hash"] = f"{'a' * 63}{index}"  # a sibling session's row
+        event["signature"] = builder._sign_event(event)
+    report = verify(builder.components(), builder.anchor())
+    assert status_of(report, "chain") is CheckStatus.SKIPPED
+    assert report.verified
+
+
+def test_1_1_still_fails_on_a_forged_link_pointer():
+    """Relaxing contiguity must not lose pointer tampering. previous_hash is
+    inside each event's signature, so rewriting it fails the signature check
+    even though the walk no longer runs."""
+    builder = PackageBuilder(event_count=4, package_version="1.1")
+    components = builder.components()
+    components["timeline.json"][2]["previous_hash"] = "forged"
+    report = verify(components, builder.anchor())
+    assert status_of(report, "event_signatures") is CheckStatus.FAIL
+    assert not report.verified
+
+
+def test_1_1_still_fails_on_a_dropped_event():
+    """Deletion is caught by the Merkle root, which the manifest signs — not by
+    the walk. This is why dropping contiguity costs no coverage."""
+    builder = PackageBuilder(event_count=4, package_version="1.1")
+    components = builder.components()
+    del components["timeline.json"][1]
+    report = verify(components, builder.anchor())
+    assert status_of(report, "merkle_root") is CheckStatus.FAIL
+    assert not report.verified
+
+
+def test_1_1_still_fails_on_producer_flagged_break():
+    """A 1.1 producer that found a real per-event integrity failure marks the
+    link unverified, and the verifier must still act on that."""
+    builder = PackageBuilder(event_count=4, package_version="1.1")
+    components = builder.components()
+    components["hash_chain.json"][2]["verified"] = False
+    report = verify(components, builder.anchor())
+    assert status_of(report, "stored_flags") is CheckStatus.FAIL
+    assert not report.verified
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("1.0", (1, 0)), ("1.1", (1, 1)), ("2.0", (2, 0)), ("nonsense", (0,)), (None, (0,))],
+)
+def test_package_version_parsing(raw, expected):
+    from behavry_verify.package import _package_version_tuple
+
+    assert _package_version_tuple({"package_version": raw} if raw else {}) == expected
+
+
+def test_unreadable_version_takes_the_strict_path():
+    """A version we cannot parse must not buy the relaxed check."""
+    builder = PackageBuilder(event_count=3, agentless=True, package_version="not-a-version")
+    report = verify(builder.components(), builder.anchor())
+    assert status_of(report, "chain") is CheckStatus.FAIL
+
+
 def test_device_claims_chain_separately_from_decisions():
     """Splicing two devices' exposure records into one chain must not verify."""
     def claim(id_, device, ts, ehash, prev):

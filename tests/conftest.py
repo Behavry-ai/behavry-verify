@@ -46,13 +46,30 @@ def _dump(body: Any) -> bytes:
 class PackageBuilder:
     """Builds a signed evidence package, and can be told to corrupt it."""
 
-    def __init__(self, *, event_count: int = 4, agents: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        event_count: int = 4,
+        agents: int = 1,
+        package_version: str = PACKAGE_VERSION,
+        agentless: bool = False,
+    ) -> None:
+        """``package_version`` defaults to 1.0 so existing tests keep exercising
+        the legacy contiguity path unchanged.
+
+        ``agentless`` models browser / Human Governance events: no agent_id, and
+        therefore no link pointer at all, because the producer only chains
+        per-agent. Under 1.0 rules such a package fails the walk outright, which
+        is the defect 1.1 exists to correct.
+        """
         self.private_key = Ed25519PrivateKey.generate()
         self.public_key_bytes = self.private_key.public_key().public_bytes_raw()
         self.public_key_b64 = base64.b64encode(self.public_key_bytes).decode("ascii")
         self.apr_identifier = "APR-2026-001942"
         self.tenant_id = TENANT_ID
         self.kid = KID
+        self.package_version = package_version
+        self.agentless = agentless
         self.events = self._make_events(event_count, agents)
 
     # -- construction --------------------------------------------------------
@@ -62,7 +79,7 @@ class PackageBuilder:
         events: list[dict[str, Any]] = []
         previous_by_agent: dict[str, str | None] = {}
         for index in range(count):
-            agent_id = f"agent-{index % agents}"
+            agent_id = None if self.agentless else f"agent-{index % agents}"
             timestamp = (base_time + timedelta(seconds=index)).isoformat(
                 timespec="microseconds"
             )
@@ -82,7 +99,11 @@ class PackageBuilder:
                 "policy_reason": "sensitive path" if index == 2 else None,
                 "behavioral_score": 0.12,
                 "event_hash": event_hash,
-                "previous_hash": previous_by_agent.get(agent_id),
+                # Agentless events are never linked: the producer looks up the
+                # previous hash by agent_id, so a null agent yields nothing.
+                "previous_hash": (
+                    None if agent_id is None else previous_by_agent.get(agent_id)
+                ),
                 "signer_kid": self.kid,
             }
             event["signature"] = self._sign_event(event)
@@ -100,6 +121,18 @@ class PackageBuilder:
         return base64.b64encode(self.private_key.sign(payload)).decode("ascii")
 
     def _hash_chain(self) -> list[dict[str, Any]]:
+        if self.package_version != "1.0":
+            # 1.1+ flags assert per-event integrity, which the producer
+            # established at export time; nothing here depends on link order.
+            return [
+                {
+                    "event_id": event["id"],
+                    "hash": event["event_hash"],
+                    "previous_hash": event["previous_hash"],
+                    "verified": True,
+                }
+                for event in self.events
+            ]
         expected: dict[str, str | None] = {}
         previous_by_agent: dict[str, str | None] = {}
         for event in self.events:
@@ -134,7 +167,7 @@ class PackageBuilder:
             "apr_identifier": self.apr_identifier,
             "apr_id": "apr-uuid-0001",
             "tenant_id": self.tenant_id,
-            "package_version": PACKAGE_VERSION,
+            "package_version": self.package_version,
             "created_at": datetime(2026, 6, 9, 15, 0, 0, tzinfo=UTC).isoformat(
                 timespec="microseconds"
             ),

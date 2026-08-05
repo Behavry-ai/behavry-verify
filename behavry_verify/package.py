@@ -52,6 +52,13 @@ __all__ = [
 
 PACKAGE_SCHEMA = "behavry.apr_evidence_package.v1"
 
+# From package_version 1.1 onward, ``hash_chain.json``'s ``verified`` flag
+# asserts per-event integrity (each event's own hash reconstructs) rather than
+# contiguity between consecutive events in the package. The chain walk is not
+# applicable to those packages — see the "Hash chain walk" step for why it was
+# never a sound check on a session-scoped export.
+CONTIGUITY_MAX_VERSION = (1, 1)
+
 # Archive-bomb guards. A real package is a handful of JSON files; these caps
 # are orders of magnitude above any legitimate export.
 MAX_MEMBER_COUNT = 512
@@ -194,6 +201,23 @@ def _chain_key(event: dict[str, Any]) -> tuple[str, Any]:
     if claim_type == "disclosure_ack":
         return ("ack", event.get("device_id"))
     return ("dec", event.get("agent_id"))
+
+
+def _package_version_tuple(manifest: dict[str, Any]) -> tuple[int, ...]:
+    """``package_version`` as a comparable tuple; ``(0,)`` when unreadable.
+
+    An absent, non-string or unparseable version sorts below every real one, so
+    a package we cannot place takes the strictest available path. A verifier
+    that relaxes a check because it failed to understand the input is worse than
+    one that reports a break it cannot explain.
+    """
+    raw = manifest.get("package_version")
+    if not isinstance(raw, str):
+        return (0,)
+    try:
+        return tuple(int(part) for part in raw.split("."))
+    except ValueError:
+        return (0,)
 
 
 def walk_event_chain(events: list[dict[str, Any]]) -> list[str]:
@@ -341,19 +365,49 @@ def verify_package(
     # -- 5. Per-event signatures ----------------------------------------------
     _check_event_signatures(report, timeline, anchor, raw_public_key, public_key)
 
-    # -- 6. Hash chain walk ---------------------------------------------------
-    breaks = walk_event_chain([e for e in timeline if isinstance(e, dict)])
-    if not breaks:
-        report.add_pass(
+    # -- 6. Hash chain walk (packages before 1.1 only) ------------------------
+    #
+    # Contiguity is a property of a WHOLE chain, not of a slice of one. Behavry
+    # hashes per agent, and an evidence package holds a single session, so its
+    # events are a subsequence: consecutive events in the package legitimately
+    # link to rows outside it when an agent runs two sessions at once, and
+    # agentless browser events carry no link pointer at all while sharing one
+    # chain key. Walking a package therefore reported breaks on intact sessions.
+    #
+    # From 1.1 the producer states per-event integrity instead, which holds for
+    # any subset, and this walk does not apply. Deletion, insertion and pointer
+    # tampering remain covered for every version by checks that do not depend on
+    # ordering: the Merkle root (step 3) is computed over the event set and is
+    # signed as part of the manifest, and each event's own signature (step 5)
+    # covers its previous_hash.
+    #
+    # Older packages are still walked, because their stored flags were produced
+    # under the old rule and the two must agree. An unrecognized version sorts
+    # below 1.1 and takes the stricter path: never relax a check because the
+    # version could not be read.
+    if _package_version_tuple(manifest) < CONTIGUITY_MAX_VERSION:
+        breaks = walk_event_chain([e for e in timeline if isinstance(e, dict)])
+        if not breaks:
+            report.add_pass(
+                "chain",
+                "No chain breaks",
+                f"{len(timeline)} events linked across "
+                f"{len({_chain_key(e) for e in timeline if isinstance(e, dict)})} chain(s)",
+            )
+        else:
+            head = breaks[0]
+            extra = f" (+{len(breaks) - 1} more)" if len(breaks) > 1 else ""
+            report.add_fail("chain", "No chain breaks", head + extra)
+    else:
+        report.add_skip(
             "chain",
             "No chain breaks",
-            f"{len(timeline)} events linked across "
-            f"{len({_chain_key(e) for e in timeline if isinstance(e, dict)})} chain(s)",
+            "not applicable to package_version "
+            f"{report.package_version or 'unknown'}: an evidence package holds one "
+            "session, which is a subsequence of the agent's chain, so consecutive "
+            "events need not link to each other. Integrity of this package's "
+            "events is covered by the Merkle root and the per-event signatures.",
         )
-    else:
-        head = breaks[0]
-        extra = f" (+{len(breaks) - 1} more)" if len(breaks) > 1 else ""
-        report.add_fail("chain", "No chain breaks", head + extra)
 
     # -- 7. Stored per-link verified flags ------------------------------------
     _check_stored_flags(report, components)

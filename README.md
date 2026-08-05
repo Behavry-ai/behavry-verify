@@ -50,6 +50,19 @@ Every check runs independently. Unlike a first-failure verifier, a broken hash c
 
 A check that cannot meaningfully run is reported as `SKIPPED`, never as a pass. An unknown key id skips the signature check rather than failing it: a key you do not have is not evidence of tampering.
 
+### "No chain breaks" and package_version
+
+Behavry hashes its audit chain **per agent**, while an evidence package holds a **single session**. A session is therefore a slice of a longer chain, and its events need not link to each other: when an agent runs two sessions at once, the chains interleave, and browser-based events have no agent at all and so carry no link pointer.
+
+Packages at `package_version` **1.0** claimed contiguity within the package, and this check enforced it. From **1.1** the producer states per-event integrity instead — a claim that holds for any slice — and the walk is reported `SKIPPED` as not applicable.
+
+Nothing is given up. What the walk was reaching for is covered by checks that do not depend on ordering, for every version:
+
+- **an event removed or added** moves the Merkle root, which the manifest signature covers;
+- **a link pointer rewritten** breaks that event's own signature, because `previous_hash` is inside the signed tuple.
+
+A `package_version` this tool cannot parse is treated as older than 1.1, so it takes the stricter path. A verifier should never relax a check because it failed to understand its input.
+
 ---
 
 ## Use it
