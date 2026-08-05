@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "behavry-verify"
-version = "0.1.0"
+version = "0.2.0"
 description = "Independently verify Behavry APR evidence packages offline, with no Behavry account."
 readme = "README.md"
 requires-python = ">=3.12"
