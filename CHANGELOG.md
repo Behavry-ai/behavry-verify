@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.1
+
+### Fixed
+
+- **`--version` reported `0.1.0` on a 0.2.0 install.** `__version__` was
+  hardcoded in `behavry_verify/__init__.py` alongside the version in
+  `pyproject.toml`, and the two drifted the moment one was bumped. It now reads
+  installed package metadata. The number also feeds the service's OpenAPI
+  document and `/health`, so all three were wrong together.
+
+  This matters more here than in most tools. An auditor recording which
+  verifier they ran would have recorded `0.1.0` — a version never published to
+  PyPI, and specifically the one without `package_version` 1.1 handling. A tool
+  whose purpose is establishing provenance must not misstate its own.
+
+  The no-install fallback says `0.0.0+unknown` rather than naming a release,
+  because a literal there is the same second source of truth that caused the
+  drift and would go stale at the next bump. A test now asserts `__version__`
+  matches both the installed distribution and `pyproject.toml`, so a stale
+  editable install cannot hide a recurrence.
+
 ## 0.2.0 — first published release
 
 The first version of `behavry-verify` on PyPI. Earlier `0.1.0` existed only in

@@ -91,3 +91,29 @@ def test_wrong_length_public_key_is_a_usage_error(package_path, capsys):
 def test_text_report_names_the_trust_source(package_path, anchor_path, capsys):
     main(["--package", str(package_path), "--trust-anchor", str(anchor_path)])
     assert "does not depend on trusting" in capsys.readouterr().out
+
+
+def test_reported_version_matches_the_distribution():
+    """`--version` must name the version actually installed.
+
+    It was hardcoded in ``behavry_verify/__init__.py`` and drifted: 0.2.0
+    shipped to PyPI while the CLI answered "0.1.0" — a version that had never
+    been published, and specifically the one lacking package_version 1.1
+    handling. An auditor recording which verifier they ran would have recorded
+    the wrong tool. A verification tool must not misreport its own provenance.
+    """
+    import tomllib
+    from importlib.metadata import version as installed_version
+    from pathlib import Path
+
+    from behavry_verify import __version__
+
+    assert __version__ == installed_version("behavry-verify")
+
+    # And the installed metadata must match the source of truth, so a bumped
+    # pyproject with a stale editable install cannot pass this quietly.
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    declared = tomllib.loads(pyproject.read_text())["project"]["version"]
+    assert __version__ == declared, (
+        f"installed {__version__} != pyproject {declared}; reinstall the package"
+    )

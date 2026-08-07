@@ -13,8 +13,13 @@ from importlib.metadata import PackageNotFoundError, version
 
 try:
     __version__ = version("behavry-verify")
-except PackageNotFoundError:  # running from a source tree without installation
-    __version__ = "0.2.0"
+except PackageNotFoundError:
+    # Running from a source tree with nothing installed. Say "unknown" rather
+    # than naming a release: a literal here is the same second source of truth
+    # that made 0.2.0 ship to PyPI while reporting "0.1.0", and it would go
+    # stale again at the next bump. A tool whose job is provenance should admit
+    # it cannot determine its own version instead of guessing a plausible one.
+    __version__ = "0.0.0+unknown"
 
 PACKAGE_SCHEMA = "behavry.apr_evidence_package.v1"
 
