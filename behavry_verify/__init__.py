@@ -9,7 +9,12 @@ must match the Behavry producer exactly, or valid evidence stops verifying.
 """
 from __future__ import annotations
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("behavry-verify")
+except PackageNotFoundError:  # running from a source tree without installation
+    __version__ = "0.2.0"
 
 PACKAGE_SCHEMA = "behavry.apr_evidence_package.v1"
 
