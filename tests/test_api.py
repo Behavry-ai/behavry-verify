@@ -217,3 +217,37 @@ def test_page_loads_no_third_party_assets(client):
     assert "http://" not in html
     for remote in ("https://fonts.googleapis.com", "https://cdn.", "https://fonts.gstatic.com"):
         assert remote not in html
+
+
+# ---------------------------------------------------------------------------
+# Observer anchors (package 1.2+)
+# ---------------------------------------------------------------------------
+
+
+def test_observer_anchors_are_accepted_by_the_api(client):
+    from tests.conftest import PackageBuilder
+
+    builder = PackageBuilder(event_count=3, package_version="1.2")
+    response = client.post(
+        "/api/v1/verify",
+        files={"package": ("apr.zip", builder.zip_bytes(), "application/zip")},
+        data={
+            "trust_anchor": json.dumps(builder.anchor()),
+            "observer_anchors": json.dumps(builder.observer_anchor()),
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["verified"] is True
+    statuses = {c["id"]: c["status"] for c in body["checks"]}
+    assert statuses["observations"] == "pass"
+    assert body["observation_summary"]["match"] == 1
+
+
+def test_malformed_observer_anchors_are_a_400(client, builder):
+    response = client.post(
+        "/api/v1/verify",
+        files={"package": ("apr.zip", builder.zip_bytes(), "application/zip")},
+        data={"observer_anchors": "{not json"},
+    )
+    assert response.status_code == 400

@@ -37,12 +37,24 @@ def verify(components, anchor):
 # ---------------------------------------------------------------------------
 
 
+# Checks that only apply from package_version 1.2. On the legacy 1.0 package
+# the default fixture builds, they must be SKIPPED, never passed.
+CONTENT_BINDING_CHECKS = {
+    "file_digests",
+    "event_content",
+    "authorization_records",
+    "observations",
+}
+
+
 def test_untampered_package_verifies(components, anchor):
     report = verify(components, anchor)
     assert report.verified, report.to_text()
-    assert all(
-        c.status in (CheckStatus.PASS, CheckStatus.WARN) for c in report.checks
-    )
+    for c in report.checks:
+        if c.id in CONTENT_BINDING_CHECKS:
+            assert c.status is CheckStatus.SKIPPED, c
+        else:
+            assert c.status in (CheckStatus.PASS, CheckStatus.WARN), c
 
 
 def test_report_surfaces_package_identity(components, anchor):
@@ -94,11 +106,15 @@ def test_altered_event_payload_fails_that_events_signature(components, anchor):
     tampered = copy.deepcopy(components)
     tampered["timeline.json"][2]["policy_result"] = "allow"
     report = verify(tampered, anchor)
-    # The policy_result is not covered by the per-event signature (which binds
-    # the hash chain), so this must be caught as a *manifest* concern only if
-    # it moves a hash. It does not - which is exactly why the chain, not the
-    # payload, is the integrity claim. Signature and chain both still hold.
+    # A 1.0 package exports only the signed hashes, not the fields they cover,
+    # so a rewritten policy_result cannot be detected. This pins that legacy
+    # limitation AND that the report says so: content binding is SKIPPED with
+    # an explicit "NOT bound", never passed. Package 1.2 closes the gap; see
+    # test_content_binding.py for the same edit failing there.
     assert status_of(report, "signature") is CheckStatus.PASS
+    assert status_of(report, "event_content") is CheckStatus.SKIPPED
+    content = next(c for c in report.checks if c.id == "event_content")
+    assert "NOT bound" in content.detail
     assert report.verified
 
 

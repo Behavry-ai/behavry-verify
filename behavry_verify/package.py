@@ -8,6 +8,13 @@ Chain of trust::
 
     trust anchor -> package manifest signature -> Merkle root
                  -> per-event signatures -> per-agent hash chain
+                 -> (1.2+) file digests -> event content -> authorization records
+    observer anchor -> observer signatures over observations
+
+From package_version 1.2 the producer exports every field a decision event's
+hash covers, so each ``event_hash`` is RECOMPUTED from content here rather than
+taken as given. Before 1.2 only the signed hashes could be checked, and the
+report says so explicitly (``event_content`` SKIPPED, content NOT bound).
 
 Unlike the reference CLI in the Behavry repo (``tools/verify_event.py``),
 which returns on the first failed check, this module runs every check it can
@@ -18,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import io
 import json
 import zipfile
@@ -38,12 +46,22 @@ from behavry_verify.canonical import (
     canonical_signing_bytes_disclosure_ack,
     canonical_signing_bytes_exposure,
 )
+from behavry_verify.hashbody import (
+    AUTHORIZATION_CLAIM,
+    MAX_DECISION_HASH_VERSION,
+    canonical_signing_bytes_agent_claim,
+    observation_canonical_body,
+    recompute_authorization_record_hash,
+    recompute_decision_event_hash,
+    recompute_observation_event_hash,
+)
 from behavry_verify.merkle import merkle_root
 from behavry_verify.report import TrustSource, VerificationReport
 
 __all__ = [
     "MAX_MEMBER_COUNT",
     "MAX_TOTAL_UNCOMPRESSED_BYTES",
+    "PackageComponents",
     "PackageError",
     "load_package_from_bytes",
     "load_package_from_path",
@@ -59,6 +77,21 @@ PACKAGE_SCHEMA = "behavry.apr_evidence_package.v1"
 # never a sound check on a session-scoped export.
 CONTIGUITY_MAX_VERSION = (1, 1)
 
+# From package_version 1.2 the producer exports every hashed field of each
+# decision event, plus ``file_digests`` in the signed manifest and the
+# authorization records and observations behind each decision.
+CONTENT_BINDING_MIN_VERSION = (1, 2)
+
+# Claim types whose content this verifier does not rebuild. Their hashes are
+# still covered by the Merkle root and their own signatures; only the
+# content-recompute step is skipped for them, and the report says so.
+NON_DECISION_CLAIM_TYPES = frozenset(
+    {"exposure", "disclosure_ack", "agent_report", "host_journal"}
+)
+
+# How many offending ids a report detail names before summarizing the rest.
+_MAX_NAMED = 10
+
 # Archive-bomb guards. A real package is a handful of JSON files; these caps
 # are orders of magnitude above any legitimate export.
 MAX_MEMBER_COUNT = 512
@@ -68,6 +101,19 @@ MAX_SINGLE_MEMBER_BYTES = 128 * 1024 * 1024  # 128 MiB
 
 class PackageError(ValueError):
     """Raised when a package cannot be read at all (not merely invalid)."""
+
+
+class PackageComponents(dict[str, Any]):
+    """Parsed package members, plus the raw bytes each was parsed from.
+
+    ``file_digests`` (package 1.2+) commit to the exact bytes in the archive, so
+    the loader keeps them. A plain ``dict`` is still accepted everywhere; for
+    those, the digest check re-serializes with the producer's dump options.
+    """
+
+    def __init__(self, parsed: dict[str, Any], raw: dict[str, bytes]) -> None:
+        super().__init__(parsed)
+        self.raw: dict[str, bytes] = dict(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +134,7 @@ def _load_from_zipfile(zf: zipfile.ZipFile) -> dict[str, Any]:
             f"{MAX_TOTAL_UNCOMPRESSED_BYTES}"
         )
 
-    members: dict[str, str] = {}
+    members: dict[str, bytes] = {}
     for info in infos:
         short = info.filename.rsplit("/", 1)[-1]
         if not short.endswith(".json"):
@@ -97,26 +143,27 @@ def _load_from_zipfile(zf: zipfile.ZipFile) -> dict[str, Any]:
             continue
         if info.file_size > MAX_SINGLE_MEMBER_BYTES:
             raise PackageError(f"member {short!r} is too large to verify")
-        try:
-            members[short] = zf.read(info).decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise PackageError(f"member {short!r} is not valid UTF-8") from exc
+        members[short] = zf.read(info)
     return _parse_members(members)
 
 
-def _parse_members(members: dict[str, str]) -> dict[str, Any]:
+def _parse_members(members: dict[str, bytes]) -> PackageComponents:
     if "manifest.json" not in members:
         raise PackageError("package has no manifest.json")
     parsed: dict[str, Any] = {}
-    for name, text in members.items():
+    for name, data in members.items():
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise PackageError(f"member {name!r} is not valid UTF-8") from exc
         try:
             parsed[name] = json.loads(text)
         except json.JSONDecodeError as exc:
             raise PackageError(f"{name} is not valid JSON: {exc}") from exc
-    return parsed
+    return PackageComponents(parsed, members)
 
 
-def load_package_from_bytes(data: bytes) -> dict[str, Any]:
+def load_package_from_bytes(data: bytes) -> PackageComponents:
     """Load an evidence package from ZIP bytes."""
     if not data:
         raise PackageError("package is empty")
@@ -130,12 +177,12 @@ def load_package_from_bytes(data: bytes) -> dict[str, Any]:
         ) from exc
 
 
-def load_package_from_path(path: Path) -> dict[str, Any]:
+def load_package_from_path(path: Path) -> PackageComponents:
     """Load an evidence package from a ZIP file or an unpacked directory."""
     if path.is_dir():
         roots = [p for p in path.iterdir() if p.is_dir() and p.name.startswith("apr-")]
         base = roots[0] if roots else path
-        members = {f.name: f.read_text(encoding="utf-8") for f in base.glob("*.json")}
+        members = {f.name: f.read_bytes() for f in base.glob("*.json")}
         return _parse_members(members)
     try:
         with zipfile.ZipFile(path) as zf:
@@ -259,8 +306,15 @@ def verify_package(
     anchor: dict[str, Any] | None = None,
     raw_public_key: bytes | None = None,
     trust_source: TrustSource = TrustSource.NONE,
+    observer_anchors: list[dict[str, Any]] | None = None,
 ) -> VerificationReport:
-    """Verify an assembled evidence package and return a full report."""
+    """Verify an assembled evidence package and return a full report.
+
+    ``observer_anchors`` are the public keys of independent observers (see
+    :func:`behavry_verify.anchor.validate_observer_anchors`), supplied by the
+    verifying party. Observations whose key is not supplied are reported as
+    not independently verified, never as passed.
+    """
     report = VerificationReport(trust_source=trust_source)
 
     manifest = components.get("manifest.json")
@@ -412,6 +466,32 @@ def verify_package(
     # -- 7. Stored per-link verified flags ------------------------------------
     _check_stored_flags(report, components)
 
+    # -- 8. File digests (1.2+) -----------------------------------------------
+    #
+    # Before 1.2 the manifest signed only itself, so every other file could be
+    # edited without breaking a signature. 1.2 puts a digest of each data file
+    # INSIDE the signed manifest.
+    content_bound = _package_version_tuple(manifest) >= CONTENT_BINDING_MIN_VERSION
+    _check_file_digests(report, components, manifest, content_bound)
+
+    # -- 9. Event content (1.2+, or any row carrying hash_version) ------------
+    #
+    # Every check above rests on the signed hashes. This one proves the
+    # content shown with each hash is what was hashed: a rewritten action,
+    # target, policy_result or tool_name changes the recomputation.
+    _check_event_content(report, timeline, content_bound)
+
+    # -- 10. Authorization records (1.2+) -------------------------------------
+    _check_authorization_records(
+        report, components, timeline, anchor, raw_public_key, public_key
+    )
+
+    # -- 11. Independent observations (1.2+) ----------------------------------
+    by_id = {
+        e.get("id"): e for e in timeline if isinstance(e, dict) and e.get("id") is not None
+    }
+    _check_observations(report, components, by_id, observer_anchors or [])
+
     return report.finalize()
 
 
@@ -554,3 +634,379 @@ def _check_stored_flags(report: VerificationReport, components: dict[str, Any]) 
             f"{len(broken)} of {len(hash_chain)} links were already marked unverified "
             f"at export time (first: event_id={broken[0].get('event_id')!r})",
         )
+
+
+# ---------------------------------------------------------------------------
+# Content binding (package 1.2+, Sprint AG-1)
+# ---------------------------------------------------------------------------
+
+
+def _producer_dump(body: Any) -> bytes:
+    """Mirror ``APRPackageGenerator._dump``: the bytes each file was written as."""
+    return json.dumps(body, indent=2, sort_keys=True, default=str).encode("utf-8")
+
+
+def _named(items: list[str]) -> str:
+    head = ", ".join(items[:_MAX_NAMED])
+    extra = f" (+{len(items) - _MAX_NAMED} more)" if len(items) > _MAX_NAMED else ""
+    return head + extra
+
+
+def _check_file_digests(
+    report: VerificationReport,
+    components: dict[str, Any],
+    manifest: dict[str, Any],
+    content_bound: bool,
+) -> None:
+    label = "File digests match"
+    digests = manifest.get("file_digests")
+    if not content_bound and digests is None:
+        report.add_skip(
+            "file_digests",
+            label,
+            f"package_version {report.package_version or 'unknown'} predates file "
+            "digests: files other than the manifest are NOT covered by its signature",
+        )
+        return
+    if not isinstance(digests, dict) or not digests:
+        report.add_fail(
+            "file_digests",
+            label,
+            "the manifest carries no file_digests, which every package_version "
+            "1.2+ manifest must",
+        )
+        return
+
+    raw = getattr(components, "raw", None)
+    failures: list[str] = []
+    reserialized = 0
+    for name in sorted(digests):
+        claimed = digests[name]
+        if name not in components:
+            failures.append(f"{name} missing")
+            continue
+        if isinstance(raw, dict) and name in raw:
+            data = raw[name]
+        else:
+            data = _producer_dump(components[name])
+            reserialized += 1
+        actual = "sha256:" + hashlib.sha256(data).hexdigest()
+        if actual != claimed:
+            failures.append(f"{name} digest differs")
+    if failures:
+        report.add_fail("file_digests", label, _named(failures))
+        return
+    note = (
+        f" ({reserialized} re-serialized with the producer's dump options, since "
+        "raw bytes were not available)"
+        if reserialized
+        else ""
+    )
+    report.add_pass(
+        "file_digests",
+        label,
+        f"{len(digests)} files match the digests in the signed manifest{note}",
+    )
+
+
+def _is_decision(event: dict[str, Any]) -> bool:
+    return event.get("claim_type") in (None, "decision")
+
+
+def _check_event_content(
+    report: VerificationReport, timeline: list[Any], content_bound: bool
+) -> None:
+    label = "Event content matches hashes"
+    events = [e for e in timeline if isinstance(e, dict)]
+    carries_bodies = any("hash_version" in e for e in events)
+    if not content_bound and not carries_bodies:
+        report.add_skip(
+            "event_content",
+            label,
+            f"package_version {report.package_version or 'unknown'} does not export "
+            "the hashed fields, so event content is NOT bound: only the signed "
+            "hashes were verified, and fields such as action, target, "
+            "policy_result and tool_name could differ from what was hashed "
+            "without detection",
+        )
+        return
+
+    mismatched: list[str] = []
+    stripped: list[str] = []
+    unsupported: list[str] = []
+    unhashed: list[str] = []
+    non_decision: dict[str, int] = {}
+    recomputed = 0
+    for event in events:
+        ident = repr(event.get("id"))
+        if not _is_decision(event):
+            claim = str(event.get("claim_type"))
+            non_decision[claim] = non_decision.get(claim, 0) + 1
+            continue
+        # PRESENCE of the key, not its value: a 1.2 exporter always writes it,
+        # so an absent key means the body was removed after signing.
+        if "hash_version" not in event:
+            if content_bound:
+                stripped.append(ident)
+            continue
+        version = event.get("hash_version")
+        if isinstance(version, int) and version > MAX_DECISION_HASH_VERSION:
+            unsupported.append(f"{ident} (v{version})")
+            continue
+        if not event.get("event_hash"):
+            unhashed.append(ident)
+            continue
+        recomputed += 1
+        if recompute_decision_event_hash(event) != event.get("event_hash"):
+            mismatched.append(ident)
+
+    notes: list[str] = []
+    if non_decision:
+        kinds = ", ".join(f"{n} {k}" for k, n in sorted(non_decision.items()))
+        notes.append(
+            f"content recompute not applicable to non-decision claims ({kinds}); "
+            "their hashes are covered by the Merkle root and signatures only"
+        )
+    if unhashed:
+        notes.append(f"{len(unhashed)} decision event(s) carry no event_hash")
+
+    problems: list[str] = []
+    if mismatched:
+        problems.append(
+            "content does not reproduce the signed event_hash for event(s) "
+            + _named(mismatched)
+        )
+    if stripped:
+        problems.append(
+            "hashed fields missing (no hash_version) for event(s) " + _named(stripped)
+        )
+    if unsupported:
+        problems.append(
+            "cannot rebuild newer hash_version for event(s) "
+            + _named(unsupported)
+            + f"; this verifier supports up to v{MAX_DECISION_HASH_VERSION}, upgrade "
+            "behavry-verify"
+        )
+    if problems:
+        report.add_fail("event_content", label, "; ".join(problems + notes))
+        return
+    if recomputed == 0:
+        report.add_skip(
+            "event_content",
+            label,
+            "; ".join(["no decision events to recompute"] + notes),
+        )
+        return
+    report.add_pass(
+        "event_content",
+        label,
+        "; ".join(
+            [f"{recomputed} decision event hash(es) recomputed from content"] + notes
+        ),
+    )
+
+
+def _key_for(
+    anchor: dict[str, Any] | None,
+    raw_public_key: bytes | None,
+    manifest_key: bytes | None,
+    kid: str | None,
+    timestamp: Any,
+) -> bytes:
+    if anchor is not None:
+        key, _ = select_key_for_timestamp(anchor, kid, timestamp)
+        return key
+    key = raw_public_key if raw_public_key is not None else manifest_key
+    if key is None:
+        raise AnchorError("no trust anchor or public key available")
+    return key
+
+
+def _check_authorization_records(
+    report: VerificationReport,
+    components: dict[str, Any],
+    timeline: list[Any],
+    anchor: dict[str, Any] | None,
+    raw_public_key: bytes | None,
+    manifest_key: bytes | None,
+) -> None:
+    label = "Authorization records valid"
+    raw_records = components.get("authorization_records.json")
+    records = [r for r in raw_records if isinstance(r, dict)] if isinstance(
+        raw_records, list
+    ) else []
+    referencing = [
+        e
+        for e in timeline
+        if isinstance(e, dict) and e.get("authorization_record_id") is not None
+    ]
+    if not records and not referencing:
+        report.add_skip(
+            "authorization_records",
+            label,
+            "package carries no authorization records",
+        )
+        return
+
+    failures: list[str] = []
+    by_id: dict[Any, dict[str, Any]] = {}
+    signed = 0
+    sig_unchecked: str | None = None
+    have_key = anchor is not None or raw_public_key is not None or manifest_key is not None
+    for record in records:
+        ident = repr(record.get("id"))
+        by_id[record.get("id")] = record
+        if recompute_authorization_record_hash(record) != record.get("record_hash"):
+            failures.append(f"record {ident} content does not reproduce record_hash")
+        signature = record.get("signature")
+        if not signature:
+            continue
+        signed += 1
+        if not have_key:
+            sig_unchecked = "no trust anchor or public key available"
+            continue
+        try:
+            key = _key_for(
+                anchor, raw_public_key, manifest_key,
+                record.get("signer_kid"), record.get("timestamp"),
+            )
+        except AnchorError as exc:
+            failures.append(f"record {ident}: {exc}")
+            continue
+        payload = canonical_signing_bytes_agent_claim(
+            claim_type=AUTHORIZATION_CLAIM,
+            event_hash=record.get("record_hash"),
+            previous_hash=record.get("previous_hash"),
+            timestamp=record.get("timestamp"),
+            tenant_id=record.get("tenant_id"),
+            agent_id=record.get("agent_id"),
+        )
+        if not _verify_ed25519(key, str(signature), payload):
+            failures.append(f"record {ident} signature failed")
+
+    for event in referencing:
+        ident = repr(event.get("id"))
+        record = by_id.get(event.get("authorization_record_id"))
+        if record is None:
+            failures.append(
+                f"event {ident} references authorization record "
+                f"{event.get('authorization_record_id')!r}, which is not in the package"
+            )
+        elif event.get("authorization_hash") != record.get("record_hash"):
+            failures.append(
+                f"event {ident} authorization_hash does not match record "
+                f"{record.get('id')!r}"
+            )
+
+    if failures:
+        report.add_fail("authorization_records", label, _named(failures))
+        return
+    unsigned = len(records) - signed
+    summary = (
+        f"{len(records)} record hash(es) recomputed, {len(referencing)} decision "
+        f"binding(s) hold, {signed} signature(s)"
+    )
+    if unsigned:
+        summary += f"; {unsigned} record(s) unsigned (bound through the decision hash only)"
+    if sig_unchecked:
+        report.add_skip(
+            "authorization_records",
+            label,
+            f"{summary} NOT checked: {sig_unchecked}",
+        )
+        return
+    report.add_pass("authorization_records", label, f"{summary} verified")
+
+
+def _check_observations(
+    report: VerificationReport,
+    components: dict[str, Any],
+    decisions_by_id: dict[Any, dict[str, Any]],
+    observer_anchors: list[dict[str, Any]],
+) -> None:
+    label = "Observer signatures valid"
+    raw_observations = components.get("observations.json")
+    observations = (
+        [o for o in raw_observations if isinstance(o, dict)]
+        if isinstance(raw_observations, list)
+        else []
+    )
+    if not observations:
+        report.add_skip("observations", label, "package carries no observations")
+        return
+
+    counts = {"match": 0, "mismatch": 0, "absent": 0, "unobservable": 0}
+    other = 0
+    for observation in observations:
+        status = observation.get("match_status")
+        if status in counts:
+            counts[status] += 1
+        else:
+            other += 1
+    report.observation_summary = {**counts, **({"other": other} if other else {})}
+
+    anchors_by_kid = {a.get("kid"): a for a in observer_anchors}
+    failures: list[str] = []
+    unverifiable: list[str] = []
+    verified = 0
+    for observation in observations:
+        ident = repr(observation.get("id"))
+        decision = decisions_by_id.get(observation.get("decision_event_id"))
+        if decision is None:
+            failures.append(
+                f"observation {ident} points at decision event "
+                f"{observation.get('decision_event_id')!r}, which is not in the timeline"
+            )
+            continue
+        decision_hash = decision.get("event_hash")
+        if observation.get("event_hash") is not None and recompute_observation_event_hash(
+            observation, decision_event_hash=decision_hash
+        ) != observation.get("event_hash"):
+            failures.append(f"observation {ident} content does not reproduce its event_hash")
+            continue
+        kid = observation.get("observer_kid")
+        observer = anchors_by_kid.get(kid)
+        if observer is None:
+            unverifiable.append(f"{ident} (kid {kid!r})")
+            continue
+        if observer.get("observer_id") != observation.get("observer_id") or observer.get(
+            "observer_type"
+        ) != observation.get("observer_type"):
+            failures.append(
+                f"observation {ident} claims observer "
+                f"{observation.get('observer_type')}/{observation.get('observer_id')}, "
+                f"but key {kid!r} belongs to "
+                f"{observer.get('observer_type')}/{observer.get('observer_id')}"
+            )
+            continue
+        body = observation_canonical_body(observation, decision_event_hash=decision_hash)
+        if not _verify_ed25519(
+            bytes.fromhex(observer["public_key_hex"]),
+            str(observation.get("observer_signature") or ""),
+            body.encode("utf-8"),
+        ):
+            failures.append(f"observation {ident} observer signature failed")
+            continue
+        verified += 1
+
+    if failures:
+        detail = _named(failures)
+        if unverifiable:
+            detail += (
+                f"; {len(unverifiable)} not verified: observer key not supplied"
+            )
+        report.add_fail("observations", label, detail)
+        return
+    if unverifiable:
+        report.add_skip(
+            "observations",
+            label,
+            f"{verified} of {len(observations)} verified; observer key not supplied "
+            f"— cannot verify independently: {_named(unverifiable)}",
+        )
+        return
+    report.add_pass(
+        "observations",
+        label,
+        f"{verified} observation(s) verified against the observer keys you supplied",
+    )

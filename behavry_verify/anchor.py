@@ -35,6 +35,7 @@ __all__ = [
     "select_public_key",
     "summarize_anchor",
     "validate_anchor",
+    "validate_observer_anchors",
 ]
 
 ED25519_PUBLIC_KEY_BYTES = 32
@@ -158,3 +159,38 @@ def summarize_anchor(anchor: dict[str, Any]) -> dict[str, Any]:
         "key_count": len(keys),
         "kids": [k.get("kid") for k in keys if isinstance(k, dict)],
     }
+
+
+def validate_observer_anchors(value: Any) -> list[dict[str, Any]]:
+    """Validate observer anchors: one object or a list of them.
+
+    Wire format, one per independent observer key (Sprint AG-1 E-3)::
+
+        {"kid": "...", "public_key_hex": "<64 hex chars, raw Ed25519>",
+         "observer_id": "...", "observer_type": "..."}
+
+    These come from the observer (or whoever operates it), never from the
+    package and never from Behavry: an observation is only as independent as
+    the key it is checked against.
+    """
+    entries = value if isinstance(value, list) else [value]
+    if not entries:
+        raise AnchorError("observer anchor list is empty")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise AnchorError("observer anchor must be a JSON object")
+        for field in ("kid", "public_key_hex", "observer_id", "observer_type"):
+            if not isinstance(entry.get(field), str) or not entry.get(field):
+                raise AnchorError(f"observer anchor is missing {field!r}")
+        try:
+            raw = bytes.fromhex(entry["public_key_hex"])
+        except ValueError as exc:
+            raise AnchorError(
+                f"observer anchor {entry['kid']!r} public_key_hex is not hex"
+            ) from exc
+        if len(raw) != ED25519_PUBLIC_KEY_BYTES:
+            raise AnchorError(
+                f"observer anchor {entry['kid']!r} is {len(raw)} bytes, "
+                f"expected {ED25519_PUBLIC_KEY_BYTES} for Ed25519"
+            )
+    return entries

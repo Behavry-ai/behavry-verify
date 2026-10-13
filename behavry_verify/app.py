@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from behavry_verify import __version__
-from behavry_verify.anchor import AnchorError, validate_anchor
+from behavry_verify.anchor import AnchorError, validate_anchor, validate_observer_anchors
 from behavry_verify.fetch import FetchError, fetch_package
 from behavry_verify.package import (
     PackageError,
@@ -88,6 +88,19 @@ def _parse_anchor(raw: str | None) -> dict[str, Any] | None:
     return anchor
 
 
+def _parse_observer_anchors(raw: str | None) -> list[dict[str, Any]]:
+    if not raw or not raw.strip():
+        return []
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"observer anchors are not valid JSON: {exc}") from exc
+    try:
+        return validate_observer_anchors(value)
+    except AnchorError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 async def _read_upload(upload: UploadFile) -> bytes:
     data = await upload.read()
     if len(data) > MAX_UPLOAD_BYTES:
@@ -115,13 +128,22 @@ def _resolve_trust(
     return None, TrustSource.NONE
 
 
-def _verify(data: bytes, anchor: dict[str, Any] | None) -> VerificationReport:
+def _verify(
+    data: bytes,
+    anchor: dict[str, Any] | None,
+    observer_anchors: list[dict[str, Any]] | None = None,
+) -> VerificationReport:
     try:
         components = load_package_from_bytes(data)
     except PackageError as exc:
         raise HTTPException(400, str(exc)) from exc
     resolved, source = _resolve_trust(components, anchor)
-    report = verify_package(components, anchor=resolved, trust_source=source)
+    report = verify_package(
+        components,
+        anchor=resolved,
+        trust_source=source,
+        observer_anchors=observer_anchors,
+    )
     if source is TrustSource.NONE and report.error is None:
         report.error = (
             "No trust anchor was supplied and this package's signing key is "
@@ -138,11 +160,14 @@ async def verify_endpoint(
     package: Annotated[UploadFile | None, File()] = None,
     package_url: Annotated[str | None, Form()] = None,
     trust_anchor: Annotated[str | None, Form()] = None,
+    observer_anchors: Annotated[str | None, Form()] = None,
 ) -> JSONResponse:
     """Verify an evidence package supplied as an upload or by URL.
 
     ``trust_anchor`` is the JSON text of an anchor obtained from the issuing
     tenant. Supplying it is what makes the result independent of Behavry.
+    ``observer_anchors`` is the JSON text of one observer anchor or a list of
+    them, used to check observer signatures on the package's observations.
     """
     if package is None and not package_url:
         raise HTTPException(400, "supply either a package file or a package_url")
@@ -150,6 +175,7 @@ async def verify_endpoint(
         raise HTTPException(400, "supply a package file or a package_url, not both")
 
     anchor = _parse_anchor(trust_anchor)
+    observers = _parse_observer_anchors(observer_anchors)
 
     if package is not None:
         data = await _read_upload(package)
@@ -159,7 +185,7 @@ async def verify_endpoint(
         except FetchError as exc:
             raise HTTPException(400, str(exc)) from exc
 
-    report = _verify(data, anchor)
+    report = _verify(data, anchor, observers)
     # A failed verification is a successful request: the caller asked a
     # question and got a definitive answer. Only malformed input is a 4xx.
     return JSONResponse(report.to_dict())
@@ -169,11 +195,16 @@ async def verify_endpoint(
 async def verify_text_endpoint(
     package: Annotated[UploadFile | None, File()] = None,
     trust_anchor: Annotated[str | None, Form()] = None,
+    observer_anchors: Annotated[str | None, Form()] = None,
 ) -> PlainTextResponse:
     """Same verification, rendered as the plain-text report (for CI use)."""
     if package is None:
         raise HTTPException(400, "supply a package file")
-    report = _verify(await _read_upload(package), _parse_anchor(trust_anchor))
+    report = _verify(
+        await _read_upload(package),
+        _parse_anchor(trust_anchor),
+        _parse_observer_anchors(observer_anchors),
+    )
     return PlainTextResponse(
         report.to_text(), status_code=200 if report.verified else 422
     )
