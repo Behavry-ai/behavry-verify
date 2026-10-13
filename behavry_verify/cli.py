@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 from behavry_verify import __version__
-from behavry_verify.anchor import AnchorError, validate_anchor
+from behavry_verify.anchor import AnchorError, validate_anchor, validate_observer_anchors
 from behavry_verify.package import PackageError, load_package_from_path, verify_package
 from behavry_verify.report import TrustSource
 
@@ -56,6 +56,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--public-key",
         type=str,
         help="Base64-encoded 32-byte raw Ed25519 public key (bypasses the anchor)",
+    )
+    parser.add_argument(
+        "--observer-anchor",
+        type=Path,
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "JSON file with an independent observer's public key "
+            '({"kid","public_key_hex","observer_id","observer_type"}, or a list of '
+            "them). Repeatable. Observations whose key is not supplied are reported "
+            "as not independently verified."
+        ),
     )
     parser.add_argument(
         "--json",
@@ -96,6 +109,16 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_USAGE
         trust_source = TrustSource.SUPPLIED_KEY
 
+    observer_anchors: list[dict] = []
+    for path in args.observer_anchor:
+        try:
+            observer_anchors.extend(
+                validate_observer_anchors(json.loads(path.read_text(encoding="utf-8")))
+            )
+        except (OSError, json.JSONDecodeError, AnchorError) as exc:
+            print(f"error: could not read observer anchor {path}: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+
     try:
         components = load_package_from_path(args.package)
     except (PackageError, OSError) as exc:
@@ -107,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         anchor=anchor,
         raw_public_key=raw_public_key,
         trust_source=trust_source,
+        observer_anchors=observer_anchors,
     )
 
     if args.json:

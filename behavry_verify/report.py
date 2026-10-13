@@ -120,6 +120,12 @@ class VerificationReport:
     signature_algorithm: str | None = None
     signing_backend: str | None = None
 
+    # Observers' own verdicts (match / mismatch / absent / unobservable), as
+    # claimed in the package. Informational: it does not affect the verdict,
+    # and whether each claim was independently verified is the
+    # ``observations`` check's job.
+    observation_summary: dict[str, int] | None = None
+
     trust_source: TrustSource = TrustSource.NONE
     verified_at: str = ""
     error: str | None = None
@@ -212,6 +218,12 @@ class VerificationReport:
         ):
             if value not in (None, ""):
                 lines.append(f"  {label.ljust(width)}  {value}")
+        if self.observation_summary:
+            verdicts = ", ".join(f"{k} {v}" for k, v in self.observation_summary.items())
+            lines.append(
+                f"  {'Observer verdicts'.ljust(width)}  {verdicts} "
+                "(informational, as claimed by observers)"
+            )
         lines.append("")
         lines.append(f"  {self.caveat}")
         if self.error:

@@ -117,3 +117,73 @@ def test_reported_version_matches_the_distribution():
     assert __version__ == declared, (
         f"installed {__version__} != pyproject {declared}; reinstall the package"
     )
+
+
+# ---------------------------------------------------------------------------
+# Observer anchors (package 1.2+)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def builder_1_2():
+    from tests.conftest import PackageBuilder
+
+    return PackageBuilder(event_count=3, package_version="1.2")
+
+
+def _checks(payload):
+    return {c["id"]: c["status"] for c in payload["checks"]}
+
+
+def test_observer_anchor_verifies_observations(tmp_path, builder_1_2, capsys):
+    package = tmp_path / "apr.zip"
+    package.write_bytes(builder_1_2.zip_bytes())
+    anchor = tmp_path / "anchor.json"
+    anchor.write_text(json.dumps(builder_1_2.anchor()))
+    observer = tmp_path / "observer.json"
+    observer.write_text(json.dumps([builder_1_2.observer_anchor()]))
+
+    code = main([
+        "--package", str(package), "--trust-anchor", str(anchor),
+        "--observer-anchor", str(observer), "--json",
+    ])
+    assert code == EXIT_VERIFIED
+    checks = _checks(json.loads(capsys.readouterr().out))
+    assert checks["observations"] == "pass"
+    assert checks["event_content"] == "pass"
+    assert checks["file_digests"] == "pass"
+    assert checks["authorization_records"] == "pass"
+
+
+def test_without_observer_anchor_observations_are_skipped(tmp_path, builder_1_2, capsys):
+    package = tmp_path / "apr.zip"
+    package.write_bytes(builder_1_2.zip_bytes())
+    anchor = tmp_path / "anchor.json"
+    anchor.write_text(json.dumps(builder_1_2.anchor()))
+    code = main(["--package", str(package), "--trust-anchor", str(anchor), "--json"])
+    assert code == EXIT_VERIFIED
+    assert _checks(json.loads(capsys.readouterr().out))["observations"] == "skipped"
+
+
+def test_tamper_probe_through_the_cli_exits_one(tmp_path, builder_1_2, capsys):
+    components = builder_1_2.components()
+    event = components["timeline.json"][2]
+    event.update(action="noop", target="/tmp/x", policy_result="allow", tool_name="ls")
+    package = tmp_path / "apr.zip"
+    package.write_bytes(builder_1_2.zip_bytes(components))
+    anchor = tmp_path / "anchor.json"
+    anchor.write_text(json.dumps(builder_1_2.anchor()))
+    code = main(["--package", str(package), "--trust-anchor", str(anchor), "--json"])
+    assert code == EXIT_NOT_VERIFIED
+    assert _checks(json.loads(capsys.readouterr().out))["event_content"] == "fail"
+
+
+def test_malformed_observer_anchor_is_a_usage_error(tmp_path, package_path, anchor_path, capsys):
+    observer = tmp_path / "observer.json"
+    observer.write_text(json.dumps({"kid": "k", "public_key_hex": "zz"}))
+    code = main([
+        "--package", str(package_path), "--trust-anchor", str(anchor_path),
+        "--observer-anchor", str(observer),
+    ])
+    assert code == EXIT_USAGE
+    assert "observer anchor" in capsys.readouterr().err
