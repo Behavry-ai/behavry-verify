@@ -1,6 +1,76 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+Sprint AG-3 (Behavry E-8 and authority evidence package 1.3), plus the AG-1
+work below that was never released on its own.
+
+### Added
+
+- **Audit-anchor verification (E-8).** `--audit-anchor PATH` on the CLI and
+  `POST /api/v1/verify-anchor` on the API verify the JSON from Behavry's
+  `GET /api/v1/audit/anchors/{id}/export`. This ports
+  `tools/verify_event.py --anchor` from the Behavry repo. It recomputes the
+  Merkle root, event count and first/last hashes, rebuilds the canonical anchor
+  bytes (v1 and v2 schemas) and checks their SHA-256 against `anchor_digest`,
+  checks Behavry's Ed25519 signature and every anchored event's signature, and
+  checks that the RFC 3161 token's message imprint is that digest. Repeating
+  `--audit-anchor` also walks the AUD-LINK back-pointers (port of
+  `--anchor-chain`) and reports `MISSING PERIOD` or `TAMPERED CHAIN`.
+- **TSA signature and chain checks, which the reference verifier does not
+  perform.** The token's CMS signature (RSA PKCS#1 v1.5, ECDSA, Ed25519, Ed448)
+  is verified over its signed attributes under the certificate the token
+  embeds, and `messageDigest` must match the TSTInfo. `--tsa-roots PEM` walks
+  the TSA certificate to roots you supply: issuer signatures, CA flags,
+  validity at `genTime`, and the `timeStamping` EKU. Without roots the report
+  says "imprint checked, TSA certificate chain not validated". Revocation is
+  never checked (no network), and the report says so.
+- `behavry_verify/rfc3161.py`: a minimal DER reader for TimeStampToken and
+  CMS SignedData. `cryptography` remains the only runtime dependency.
+- **Authority evidence package 1.3.** Schema
+  `behavry.authority_evidence_package.v1` is accepted alongside the APR schema,
+  with no schema warning for either, and the loader accepts an `authority-*`
+  root directory as well as `apr-*`. New checks:
+  - `provenance` (12): `body_digest` over RFC 8785, `entry_hash` from
+    `provenance_canonical_body`, links from genesis, the Ed25519 signature under
+    the trust anchor (agent-claim form, claim type `provenance`), agent
+    consistency, and `provenance_head` and `provenance_count` against the
+    signed manifest. A redacted body (`null`) is bound by its digest alone and
+    counted.
+  - `assessments` (13): each Minotaur envelope's canonical bytes, its
+    `bundle_digest` and its Ed25519 signature under a supplied observer anchor
+    with a matching `kid`, `observer_id` and `observer_type`. Without the key the
+    check is `SKIPPED` (not independently verified), never passed. Every
+    `assessment` provenance entry must reference, through an `evidence_refs`
+    item carrying `bundle_digest`, a bundle present in `assessments.json`.
+  - `lifecycle` (14): informational. Lists which golden-path steps the
+    provenance evidences. Reported with the new `info` status, which never
+    affects the verdict, and as `lifecycle` on the JSON report.
+- `behavry_verify/jcs.py`: an exact copy of Behavry's RFC 8785
+  `canonical_json`, with the same error behaviour, plus `content_digest`.
+- Report fields `kind` (`evidence_package` or `audit_anchor`),
+  `anchor_summary` and `lifecycle`.
+- Producer vectors: `tests/vectors/anchor_vectors.json`, `ag3_vectors.json` and
+  `tsa_root.pem`, written by `generate_anchor_vectors.py` from Behavry's own
+  anchoring, signer, `parse_timestamp_response`, provenance and RFC 8785 code.
+- A CI guard that every committed `anchors/*.json` is valid, holds only public
+  keys, and repeats no `kid`. `anchors/README.md` now documents how a tenant
+  anchor is published and rotated.
+
+### Fixed
+
+- **`agent_report` and `host_journal` timeline events failed their signature
+  check.** They were checked against the decision signing form. They now use
+  the agent-claim and device-claim forms, as in `tools/verify_event.py`.
+  Authority package timelines carry `agent_report` rows, so this matters there.
+
+### Unchanged
+
+- APR packages verify exactly as before. The file digest check already
+  iterates the manifest's `file_digests`, so the authority package's new files
+  are covered with no change.
+
+## Sprint AG-1 E-6 (never released alone; first shipped in 0.3.0)
 
 ### Fixed
 

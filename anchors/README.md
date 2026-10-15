@@ -25,6 +25,24 @@ The exact JSON a tenant admin exports from `GET /api/v1/admin/apr-trust-anchor`:
 
 Name the file after the tenant (`acme-corp.json`). A `kid` may appear only once across all files; the first one committed wins.
 
+One anchor covers everything the tenant signs: APR evidence packages, authority evidence packages, and audit anchors are all signed under the same tenant key set, so a tenant publishes once.
+
+## How a tenant anchor gets published
+
+1. A tenant admin exports the anchor from the dashboard (Admin, then Trust anchor), or with `GET /api/v1/admin/apr-trust-anchor`, and sends it to Behavry with written consent to publish it.
+2. Check the file before committing it. It must parse, every key must be a 32-byte Ed25519 public key, no `kid` may already appear in another file here, and it must hold no private material. `tests/test_registry.py::test_committed_anchors_are_valid_and_public` enforces all four in CI.
+3. Verify a real package from that tenant against the file, so a wrong anchor is caught before it is served:
+
+   ```bash
+   behavry-verify --package <their package>.zip --trust-anchor anchors/<tenant>.json
+   ```
+
+4. Open a pull request adding `anchors/<tenant>.json`. Once it merges and deploys, `/trust-anchor.json` serves the key and the web API will use it for submissions that arrive without an anchor. Reports label that result as the weaker, published-registry path.
+
+To rotate, the tenant exports again after rotating. Replace the file with the new export, which still contains the old key with its `not_after` set, so packages signed before the rotation keep verifying.
+
+The registry ships empty. No key is published until a tenant asks for it, and no placeholder or example key is ever committed here, because a committed key would be served as real.
+
 ## Rules
 
 - **Public keys only.** A trust anchor never contains private key material. Check before you commit.
