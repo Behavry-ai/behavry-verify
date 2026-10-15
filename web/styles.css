@@ -313,6 +313,7 @@ li.pass .glyph { color: var(--pass); }
 li.fail .glyph { color: var(--fail); }
 li.warn .glyph { color: var(--warn); }
 li.skipped .glyph { color: var(--skip); }
+li.info .glyph { color: var(--muted); }
 li.skipped .label { color: var(--muted); }
 .label { font-weight: 600; }
 .detail {

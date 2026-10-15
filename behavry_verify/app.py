@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from behavry_verify import __version__
 from behavry_verify.anchor import AnchorError, validate_anchor, validate_observer_anchors
+from behavry_verify.audit_anchor import verify_audit_anchor
 from behavry_verify.fetch import FetchError, fetch_package
 from behavry_verify.package import (
     PackageError,
@@ -26,6 +27,7 @@ from behavry_verify.package import (
 )
 from behavry_verify.registry import aggregate_anchor, anchor_for_kid
 from behavry_verify.report import TrustSource, VerificationReport
+from behavry_verify.rfc3161 import load_pem_certificates
 
 MAX_UPLOAD_BYTES = int(os.environ.get("VERIFY_MAX_UPLOAD_BYTES", 32 * 1024 * 1024))
 
@@ -208,6 +210,49 @@ async def verify_text_endpoint(
     return PlainTextResponse(
         report.to_text(), status_code=200 if report.verified else 422
     )
+
+
+@app.post("/api/v1/verify-anchor")
+async def verify_anchor_endpoint(
+    audit_anchor: Annotated[UploadFile, File()],
+    trust_anchor: Annotated[str | None, Form()] = None,
+    tsa_roots: Annotated[str | None, Form()] = None,
+) -> JSONResponse:
+    """Verify an audit anchor export (the RFC 3161 "when" proof).
+
+    ``audit_anchor`` is the JSON from ``GET /api/v1/audit/anchors/{id}/export``.
+    ``trust_anchor`` works as for packages; without it the published registry
+    is consulted by the anchor's ``signer_kid``. ``tsa_roots`` is the PEM text
+    of TSA roots the caller trusts; without it the TSA certificate chain is
+    reported as not validated.
+    """
+    data = await _read_upload(audit_anchor)
+    try:
+        export = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(400, f"audit anchor is not valid JSON: {exc}") from exc
+    if not isinstance(export, dict):
+        raise HTTPException(400, "audit anchor must be a JSON object")
+    anchor = _parse_anchor(trust_anchor)
+    roots = None
+    if tsa_roots and tsa_roots.strip():
+        try:
+            roots = load_pem_certificates(tsa_roots.encode("utf-8"))
+        except ValueError as exc:
+            raise HTTPException(400, f"tsa_roots is not a PEM certificate bundle: {exc}") from exc
+
+    source = TrustSource.SUPPLIED_ANCHOR if anchor is not None else TrustSource.NONE
+    if anchor is None:
+        published = anchor_for_kid(export.get("signer_kid"))
+        if published is not None:
+            anchor, source = published, TrustSource.PUBLISHED_REGISTRY
+    report = verify_audit_anchor(export, anchor=anchor, trust_source=source, tsa_roots=roots)
+    if source is TrustSource.NONE and report.error is None:
+        report.error = (
+            "No trust anchor was supplied and this anchor's signing key is not in "
+            "the published registry, so its signature could not be checked."
+        )
+    return JSONResponse(report.to_dict())
 
 
 # ---------------------------------------------------------------------------

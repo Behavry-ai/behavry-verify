@@ -34,6 +34,8 @@ class CheckStatus(StrEnum):
     FAIL = "fail"
     SKIPPED = "skipped"
     WARN = "warn"
+    INFO = "info"
+    """Informational: reported, never part of the verdict."""
 
 
 class TrustSource(StrEnum):
@@ -74,6 +76,21 @@ TRUST_SOURCE_CAVEAT: dict[TrustSource, str] = {
         "anchor from the tenant directly and verify against that."
     ),
     TrustSource.NONE: "No trust anchor or public key was available.",
+}
+
+
+_ANCHOR_LABELS: dict[str, str] = {
+    "anchor_id": "Anchor id",
+    "tenant_id": "Tenant",
+    "period_start": "Period start",
+    "period_end": "Period end",
+    "anchor_digest": "Anchor digest",
+    "previous_anchor_digest": "Previous anchor",
+    "tsa_status": "TSA status",
+    "tsa_url": "TSA",
+    "tsa_gen_time": "TSA genTime",
+    "tsa_serial_number": "TSA serial",
+    "tsa_policy": "TSA policy",
 }
 
 
@@ -126,6 +143,16 @@ class VerificationReport:
     # ``observations`` check's job.
     observation_summary: dict[str, int] | None = None
 
+    # What was verified: "evidence_package" or "audit_anchor".
+    kind: str = "evidence_package"
+
+    # Audit anchors only: what the anchor claims (period, tenant, TSA time).
+    anchor_summary: dict[str, Any] | None = None
+
+    # Authority packages (1.3) only: which golden-path elements the provenance
+    # chain evidences. Informational, like ``observation_summary``.
+    lifecycle: dict[str, bool] | None = None
+
     trust_source: TrustSource = TrustSource.NONE
     verified_at: str = ""
     error: str | None = None
@@ -154,6 +181,9 @@ class VerificationReport:
 
     def add_warn(self, check_id: str, label: str, detail: str = "") -> Check:
         return self.add(check_id, label, CheckStatus.WARN, detail)
+
+    def add_info(self, check_id: str, label: str, detail: str = "") -> Check:
+        return self.add(check_id, label, CheckStatus.INFO, detail)
 
     def finalize(self) -> VerificationReport:
         """Decide the verdict.
@@ -199,6 +229,7 @@ class VerificationReport:
             CheckStatus.FAIL: "✗",
             CheckStatus.SKIPPED: "–",
             CheckStatus.WARN: "⚠",
+            CheckStatus.INFO: "i",
         }
         width = max((len(c.label) for c in self.checks), default=0)
         lines: list[str] = []
@@ -218,6 +249,11 @@ class VerificationReport:
         ):
             if value not in (None, ""):
                 lines.append(f"  {label.ljust(width)}  {value}")
+        if self.anchor_summary:
+            for key, value in self.anchor_summary.items():
+                if value not in (None, ""):
+                    name = _ANCHOR_LABELS.get(key, key)
+                    lines.append(f"  {name.ljust(width)}  {value}")
         if self.observation_summary:
             verdicts = ", ".join(f"{k} {v}" for k, v in self.observation_summary.items())
             lines.append(

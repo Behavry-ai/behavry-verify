@@ -1,0 +1,521 @@
+"""Audit-anchor verification: the RFC 3161 "when" proof (Behavry E-8).
+
+An evidence package proves that the holder of a key vouched for a record. That
+is a claim made by a party that also owns the clock. An **audit anchor** adds
+the one thing it cannot: a timestamp from an authority whose key Behavry does
+not hold, over a digest that commits to a tenant's whole audit trail for one
+period.
+
+Input is the JSON from ``GET /api/v1/audit/anchors/{id}/export``, which is
+byte-for-byte what the WORM copy holds. This is a port of
+``tools/verify_event.py --anchor`` and ``--anchor-chain`` in the Behavry repo,
+with the canonical form mirroring ``backend/behavry/audit/anchoring.py``:
+
+1. recompute the Merkle root over the period's ordered event hashes and check
+   it, the event count and the first/last hash against the anchor;
+2. rebuild the canonical anchor bytes and check their SHA-256 against
+   ``anchor_digest``;
+3. check Behavry's signature over those bytes under the trust anchor;
+4. check each anchored event's own signature;
+5. check the RFC 3161 token's message imprint equals that digest;
+6. check the TSA's own signature on the token (the reference verifier does not);
+7. walk the TSA's certificate chain to roots the verifying party supplies.
+
+``openssl ts -verify`` alone cannot do 1 to 3: it validates a token against a
+digest you hand it, and cannot tell you that the digest is the one these
+events produce. That link is the whole claim.
+
+Unlike the reference, every check runs and is reported (see
+:mod:`behavry_verify.report`), and an anchor carrying no Behavry signature is
+NOT VERIFIED here: the reference prints a note and passes it, but a verdict
+this tool calls verified always rests on a checked signature.
+"""
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import json
+from datetime import UTC, datetime
+from typing import Any
+
+from cryptography import x509
+
+from behavry_verify.anchor import AnchorError, select_key_for_timestamp
+from behavry_verify.merkle import merkle_root
+from behavry_verify.package import _event_payload, _verify_ed25519
+from behavry_verify.report import TrustSource, VerificationReport
+from behavry_verify.rfc3161 import (
+    DERError,
+    parse_timestamp_token,
+    validate_tsa_chain,
+    verify_tsa_signature,
+)
+
+__all__ = [
+    "ANCHOR_SCHEMA",
+    "ANCHOR_SCHEMA_V1",
+    "ANCHOR_SCHEMA_V2",
+    "canonical_anchor_bytes",
+    "verify_audit_anchor",
+    "verify_anchor_chain",
+]
+
+# Mirrors audit/anchoring's schema constants. The schema string is inside the
+# signed payload, so a mismatch is a signature failure, not a soft warning.
+# Every version is kept forever: an anchor is rebuilt under the schema IT was
+# sealed with, never the current one.
+ANCHOR_SCHEMA_V1 = "behavry.audit_anchor.v1"
+# AUD-LINK: adds previous_anchor_digest inside the signed bytes.
+ANCHOR_SCHEMA_V2 = "behavry.audit_anchor.v2"
+ANCHOR_SCHEMA = ANCHOR_SCHEMA_V2
+
+_KNOWN_SCHEMAS = frozenset({ANCHOR_SCHEMA_V1, ANCHOR_SCHEMA_V2})
+
+
+def canonical_anchor_bytes(anchor: dict[str, Any]) -> bytes:
+    """Canonical bytes an anchor's signature and TSA token cover.
+
+    Mirrors ``audit/anchoring.canonical_anchor_bytes`` exactly: sorted keys,
+    tight separators, ASCII-escaped. Timestamps are taken from the export
+    verbatim (the exporter already wrote them in UTC microsecond form), since
+    re-rendering is a second chance to disagree with the producer.
+
+    ``tenant_id``, ``first_event_hash``, ``last_event_hash`` and (v2)
+    ``previous_anchor_digest`` fall back to ``""`` as the producer does, so
+    ``None`` and ``""`` yield the same bytes. The export's OWN ``schema`` picks
+    the shape, defaulting to v1 for anchors sealed before the field existed.
+    """
+    schema = anchor.get("schema") or ANCHOR_SCHEMA_V1
+    payload = {
+        "schema": schema,
+        "tenant_id": anchor.get("tenant_id") or "",
+        "period_start": anchor.get("period_start"),
+        "period_end": anchor.get("period_end"),
+        "event_count": anchor.get("event_count"),
+        "merkle_root": anchor.get("merkle_root"),
+        "first_event_hash": anchor.get("first_event_hash") or "",
+        "last_event_hash": anchor.get("last_event_hash") or "",
+    }
+    if schema == ANCHOR_SCHEMA_V2:
+        payload["previous_anchor_digest"] = anchor.get("previous_anchor_digest") or ""
+    return json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+
+def _openssl_hint(digest_hex: str) -> str:
+    return (
+        "To check it against your own roots instead: extract the token with "
+        "python -c \"import base64,json,sys;open('token.tsr','wb').write("
+        "base64.b64decode(json.load(open(sys.argv[1]))['tsa']['token_der_b64']))\" "
+        f"<anchor.json>, then openssl ts -verify -token_in -in token.tsr -digest "
+        f"{digest_hex} -CAfile your-tsa-roots.pem"
+    )
+
+
+def verify_audit_anchor(
+    export: dict[str, Any],
+    *,
+    anchor: dict[str, Any] | None = None,
+    raw_public_key: bytes | None = None,
+    trust_source: TrustSource = TrustSource.NONE,
+    tsa_roots: list[x509.Certificate] | None = None,
+) -> VerificationReport:
+    """Verify one exported audit anchor offline and return a full report.
+
+    ``anchor`` is the issuing tenant's Behavry trust anchor (or pass
+    ``raw_public_key``). ``tsa_roots`` are the TSA root certificates the
+    verifying party trusts; without them the TSA certificate chain is
+    reported as not validated, never as passed.
+    """
+    report = VerificationReport(trust_source=trust_source, kind="audit_anchor")
+    if not isinstance(export, dict):
+        report.error = "audit anchor export must be a JSON object"
+        report.add_fail("anchor_format", "Anchor readable", report.error)
+        return report.finalize()
+
+    schema = export.get("schema") or ANCHOR_SCHEMA_V1
+    tsa = export.get("tsa") if isinstance(export.get("tsa"), dict) else {}
+    report.package_schema = schema
+    report.event_count = export.get("event_count")
+    report.root_hash = export.get("merkle_root")
+    report.created_at = export.get("sealed_at")
+    report.signer_kid = export.get("signer_kid")
+    report.signature_algorithm = export.get("signing_algorithm")
+    report.signing_backend = export.get("signing_backend")
+    summary: dict[str, Any] = {
+        "anchor_id": export.get("anchor_id"),
+        "tenant_id": export.get("tenant_id"),
+        "period_start": export.get("period_start"),
+        "period_end": export.get("period_end"),
+        "anchor_digest": export.get("anchor_digest"),
+        "previous_anchor_digest": export.get("previous_anchor_digest"),
+        "tsa_status": tsa.get("status"),
+        "tsa_url": tsa.get("url"),
+    }
+    report.anchor_summary = summary
+
+    if schema not in _KNOWN_SCHEMAS:
+        report.add_warn(
+            "schema",
+            "Anchor schema recognized",
+            f"{schema!r} is newer than this verifier knows; its canonical form "
+            "may differ, so upgrade behavry-verify if the digest check fails",
+        )
+
+    events_raw = export.get("events")
+    events = (
+        [e for e in events_raw if isinstance(e, dict)] if isinstance(events_raw, list) else None
+    )
+
+    # -- 1. Merkle root, event count and boundary hashes ----------------------
+    #
+    # Only hash-bearing events are leaves (the producer filters the same way:
+    # a row predating FE2-01 has no hash). event_count covers ALL records, so
+    # it is compared with the records, never with the leaf count.
+    if events is None:
+        report.add_fail(
+            "merkle_root",
+            "Merkle root matches",
+            "the export has no events array to recompute the root from",
+        )
+        hashes: list[str] = []
+    else:
+        hashes = [str(e["event_hash"]) for e in events if e.get("event_hash")]
+        recomputed = merkle_root(hashes)
+        if recomputed == export.get("merkle_root"):
+            report.add_pass(
+                "merkle_root",
+                "Merkle root matches",
+                f"recomputed over {len(hashes)} event hash(es) in {len(events)} record(s)",
+            )
+        else:
+            report.add_fail(
+                "merkle_root",
+                "Merkle root matches",
+                f"recomputed {recomputed}, anchor claims {export.get('merkle_root')}",
+            )
+        stated = export.get("event_count")
+        if stated is None:
+            report.add_skip("event_count", "Event count verified", "anchor has no event_count")
+        elif stated == len(events):
+            report.add_pass("event_count", "Event count verified", f"{len(events)} records")
+        else:
+            report.add_fail(
+                "event_count",
+                "Event count verified",
+                f"export holds {len(events)} record(s), anchor claims {stated}",
+            )
+        first = hashes[0] if hashes else None
+        last = hashes[-1] if hashes else None
+        problems = []
+        if (export.get("first_event_hash") or None) != first:
+            problems.append("first_event_hash does not match the first hashed event")
+        if (export.get("last_event_hash") or None) != last:
+            problems.append("last_event_hash does not match the last hashed event")
+        if problems:
+            report.add_fail(
+                "boundary_hashes", "First and last event hashes match", "; ".join(problems)
+            )
+        else:
+            report.add_pass("boundary_hashes", "First and last event hashes match")
+
+    # -- 2. Canonical bytes and the digest the TSA was asked about ------------
+    canonical = canonical_anchor_bytes(export)
+    digest_hex = hashlib.sha256(canonical).hexdigest()
+    stated_digest = export.get("anchor_digest")
+    if not stated_digest:
+        report.add_fail(
+            "anchor_digest", "Anchor digest matches", "the anchor states no anchor_digest"
+        )
+    elif stated_digest == digest_hex:
+        report.add_pass("anchor_digest", "Anchor digest matches", digest_hex)
+    else:
+        report.add_fail(
+            "anchor_digest",
+            "Anchor digest matches",
+            f"recomputed {digest_hex} from the anchor's fields, anchor states {stated_digest}",
+        )
+
+    # -- 3. Behavry's signature over those bytes ------------------------------
+    key: bytes | None = raw_public_key
+    if key is None and anchor is not None:
+        try:
+            key, _ = select_key_for_timestamp(
+                anchor, export.get("signer_kid"), export.get("sealed_at")
+            )
+        except AnchorError as exc:
+            report.error = str(exc)
+    if not export.get("signature"):
+        # A signing failure costs the producer the signature, never the anchor,
+        # so this is a real state. It is still unproven who sealed it.
+        report.add_skip(
+            "signature",
+            "Anchor signature valid",
+            "the anchor carries no Behavry signature, so who sealed it is not proven "
+            "(the Merkle root, digest and any TSA token are still checked)",
+        )
+    elif key is None:
+        report.add_skip(
+            "signature",
+            "Anchor signature valid",
+            report.error or "no trust anchor or public key available",
+        )
+    elif _verify_ed25519(key, str(export["signature"]), canonical):
+        report.add_pass(
+            "signature",
+            "Anchor signature valid",
+            f"Ed25519 over the canonical anchor bytes, key {export.get('signer_kid') or 'unknown'}",
+        )
+    else:
+        report.add_fail(
+            "signature",
+            "Anchor signature valid",
+            "the anchor signature did not verify against the selected key (the anchor "
+            "was altered, or the key is not the signer's)",
+        )
+
+    # -- 4. Per-event signatures ----------------------------------------------
+    #
+    # The anchor record omits tenant_id per event (it is a property of the
+    # anchor), but the signed tuple includes it, so it is supplied here.
+    signed = [e for e in (events or []) if e.get("signature")]
+    if not signed:
+        report.add_skip(
+            "event_signatures", "Event signatures valid", "no anchored event carries a signature"
+        )
+    elif key is None and anchor is None:
+        report.add_skip(
+            "event_signatures", "Event signatures valid", "no trust anchor or public key available"
+        )
+    else:
+        failures: list[str] = []
+        for index, event in enumerate(signed):
+            candidate = dict(event)
+            candidate.setdefault("tenant_id", export.get("tenant_id"))
+            event_key = raw_public_key
+            if anchor is not None:
+                try:
+                    event_key, _ = select_key_for_timestamp(
+                        anchor, event.get("signer_kid"), event.get("timestamp")
+                    )
+                except AnchorError as exc:
+                    failures.append(f"event #{index} ({event.get('id')!r}): {exc}")
+                    continue
+            if event_key is None or not _verify_ed25519(
+                event_key, str(event["signature"]), _event_payload(candidate)
+            ):
+                failures.append(f"event #{index} ({event.get('id')!r}) signature failed")
+        if failures:
+            extra = f" (+{len(failures) - 1} more)" if len(failures) > 1 else ""
+            report.add_fail("event_signatures", "Event signatures valid", failures[0] + extra)
+        else:
+            report.add_pass(
+                "event_signatures",
+                "Event signatures valid",
+                f"{len(signed)} of {len(events or [])} records individually signed and verified",
+            )
+
+    # -- 5 to 7. The RFC 3161 token ---------------------------------------------
+    _check_token(report, export, tsa, digest_hex, tsa_roots)
+    return report.finalize()
+
+
+def _check_token(
+    report: VerificationReport,
+    export: dict[str, Any],
+    tsa: dict[str, Any],
+    digest_hex: str,
+    tsa_roots: list[x509.Certificate] | None,
+) -> None:
+    label = "RFC 3161 token covers the anchor digest"
+    token_b64 = tsa.get("token_der_b64")
+    if not token_b64:
+        # No TSA configured is the normal state of an air-gapped deployment,
+        # and a TSA outage is recorded rather than hidden. The integrity claims
+        # above stand; only the external time claim is absent, and the report
+        # says exactly that rather than over-claiming.
+        report.add_skip(
+            "tsa_imprint",
+            label,
+            f"NO RFC 3161 token on this anchor (tsa status={tsa.get('status')!r}): the "
+            "Merkle root, digest and signature are checked, but no third party attests to when",
+        )
+        return
+    try:
+        token = parse_timestamp_token(base64.b64decode(str(token_b64), validate=True))
+    except (DERError, binascii.Error, ValueError, IndexError) as exc:
+        report.add_fail("tsa_imprint", label, f"the timestamp token is unreadable: {exc}")
+        return
+
+    summary = report.anchor_summary or {}
+    summary.update(
+        {
+            "tsa_gen_time": token.gen_time.isoformat(),
+            "tsa_serial_number": str(token.serial_number),
+            "tsa_policy": token.policy,
+        }
+    )
+
+    if token.imprint_algorithm != "sha256":
+        report.add_fail(
+            "tsa_imprint", label, f"token imprint uses {token.imprint_algorithm}, expected sha256"
+        )
+    elif token.imprint != bytes.fromhex(digest_hex):
+        report.add_fail(
+            "tsa_imprint",
+            label,
+            "the token covers a different digest than this anchor, so it does not "
+            "attest to these events",
+        )
+    else:
+        stated_time = _parse_time(tsa.get("gen_time"))
+        if tsa.get("gen_time") and stated_time != token.gen_time:
+            report.add_fail(
+                "tsa_imprint",
+                label,
+                f"the export states gen_time {tsa.get('gen_time')}, but the token says "
+                f"{token.gen_time.isoformat()}",
+            )
+        else:
+            report.add_pass(
+                "tsa_imprint",
+                label,
+                f"genTime {token.gen_time.isoformat()}, serial {token.serial_number}, "
+                f"policy {token.policy}",
+            )
+
+    sig = verify_tsa_signature(token)
+    sig_label = "TSA signature valid"
+    if sig.status == "valid":
+        subject = sig.certificate.subject.rfc4514_string() if sig.certificate else "unknown"
+        report.add_pass(
+            "tsa_signature",
+            sig_label,
+            f"{sig.detail} under the certificate embedded in the token ({subject})",
+        )
+    elif sig.status == "invalid":
+        report.add_fail("tsa_signature", sig_label, sig.detail)
+    elif sig.status == "absent":
+        report.add_warn("tsa_signature", sig_label, sig.detail)
+    else:
+        report.add_skip("tsa_signature", sig_label, f"not checked: {sig.detail}")
+
+    chain_label = "TSA certificate chain valid"
+    if sig.status != "valid" or sig.certificate is None:
+        report.add_skip(
+            "tsa_chain",
+            chain_label,
+            "imprint checked, TSA certificate chain not validated: the TSA signature "
+            "was not verified, so there is no certificate to chain",
+        )
+        return
+    if not tsa_roots:
+        report.add_skip(
+            "tsa_chain",
+            chain_label,
+            "imprint checked, TSA certificate chain not validated: that needs your "
+            "trust store, not Behavry's. Supply your TSA roots with --tsa-roots. "
+            + _openssl_hint(digest_hex),
+        )
+        return
+    ok, detail = validate_tsa_chain(sig.certificate, token, tsa_roots)
+    if ok:
+        report.add_pass(
+            "tsa_chain",
+            chain_label,
+            f"{detail}, valid at genTime; revocation (CRL/OCSP) not checked",
+        )
+    else:
+        report.add_fail("tsa_chain", chain_label, detail)
+
+
+def verify_anchor_chain(exports: list[dict[str, Any]]) -> tuple[bool, list[str]]:
+    """Walk a set of anchor exports and report whether a period is missing.
+
+    Port of ``tools/verify_event.py::verify_anchor_chain`` (Sprint AUD-LINK).
+    Each v2 anchor commits to its predecessor's ``anchor_digest`` inside its own
+    signed and timestamped bytes. Two findings mean opposite things:
+
+    * **MISSING PERIOD**: a back-pointer names a digest no supplied anchor has.
+      Evidence was removed, or was never handed over.
+    * **TAMPERED CHAIN**: a back-pointer names an anchor that IS present, but
+      not the one immediately before it in period order, or a later v2 anchor
+      carries no back-pointer at all.
+
+    Per-anchor integrity is NOT rechecked here; that is
+    :func:`verify_audit_anchor`'s job. v1 anchors carry no back-pointer and are
+    reported as unchained, not as breaks.
+    """
+    if not exports:
+        return False, ["no anchor exports supplied"]
+    tenants = {a.get("tenant_id") for a in exports}
+    if len(tenants) > 1:
+        return False, [
+            "anchors span more than one tenant "
+            f"({sorted(str(t) for t in tenants)}): chains are per-tenant and splicing "
+            "two of them would compare records never sealed in sequence"
+        ]
+
+    ordered = sorted(exports, key=lambda a: a.get("period_start") or "")
+    by_digest = {a.get("anchor_digest"): a for a in ordered if a.get("anchor_digest")}
+    lines: list[str] = []
+    problems: list[str] = []
+    linked = unchained = 0
+    seen_chained = False
+    for i, item in enumerate(ordered):
+        label = f"{item.get('period_start')}..{item.get('period_end')}"
+        if (item.get("schema") or ANCHOR_SCHEMA_V1) != ANCHOR_SCHEMA_V2:
+            unchained += 1
+            continue
+        stated = item.get("previous_anchor_digest") or None
+        if stated is None:
+            # Legitimate exactly once: the first v2 anchor in the set.
+            if seen_chained:
+                problems.append(
+                    f"TAMPERED CHAIN at {label}: a v2 anchor later in the set carries no "
+                    "back-pointer, so the link to the period before it was removed"
+                )
+            else:
+                lines.append(f"Chain starts at {label} (no predecessor claimed)")
+                seen_chained = True
+            continue
+        predecessor = by_digest.get(stated)
+        if predecessor is None:
+            problems.append(
+                f"MISSING PERIOD before {label}: this anchor commits to predecessor "
+                f"digest {stated} and no supplied anchor has it. The record for that "
+                "period is not in this set."
+            )
+            continue
+        expected = ordered[i - 1] if i > 0 else None
+        if predecessor is not expected:
+            problems.append(
+                f"TAMPERED CHAIN at {label}: back-pointer names the anchor for "
+                f"{predecessor.get('period_start')}, which is not the period immediately "
+                "before this one"
+            )
+            continue
+        linked += 1
+        seen_chained = True
+
+    lines.append(f"{len(ordered)} anchor(s) supplied, {linked} linked to their predecessor")
+    if unchained:
+        lines.append(
+            f"{unchained} pre-AUD-LINK anchor(s) carry no back-pointer: not a gap; the "
+            "chain begins at the v1/v2 boundary and cannot be backfilled"
+        )
+    if problems:
+        return False, lines + problems
+    return True, lines + ["Anchor chain VERIFIED: no period is missing from this set"]

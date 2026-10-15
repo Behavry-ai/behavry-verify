@@ -14,7 +14,7 @@
   var status = document.getElementById("status");
   var result = document.getElementById("result");
 
-  var GLYPH = { pass: "✓", fail: "✗", warn: "⚠", skipped: "–" };
+  var GLYPH = { pass: "✓", fail: "✗", warn: "⚠", skipped: "–", info: "i" };
 
   // -- file selection -------------------------------------------------------
 
