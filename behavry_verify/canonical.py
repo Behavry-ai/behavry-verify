@@ -10,6 +10,7 @@ Counterparts (repo ``Behavry-ai/behavry``):
   ``canonical_signing_bytes``            -> ``backend/behavry/audit/signer.py``
   ``canonical_signing_bytes_exposure``   -> ``backend/behavry/audit/signer.py``
   ``canonical_signing_bytes_disclosure_ack`` -> ``backend/behavry/audit/signer.py``
+  ``canonical_signing_bytes_host_journal`` -> ``backend/behavry/audit/signer.py``
   ``canonical_package_manifest_bytes``   -> ``backend/behavry/apr/packages.py``
 """
 from __future__ import annotations
@@ -23,6 +24,7 @@ __all__ = [
     "canonical_signing_bytes",
     "canonical_signing_bytes_disclosure_ack",
     "canonical_signing_bytes_exposure",
+    "canonical_signing_bytes_host_journal",
     "normalize_timestamp",
 ]
 
@@ -107,6 +109,30 @@ def canonical_signing_bytes_disclosure_ack(
     """Per-event canonical payload for a ``disclosure_ack`` device claim."""
     payload = {
         "claim_type": "disclosure_ack",
+        "device_id": device_id or "",
+        "event_hash": event_hash or "",
+        "previous_hash": previous_hash or "GENESIS",
+        "tenant_id": tenant_id or "",
+        "timestamp": normalize_timestamp(timestamp),
+    }
+    return _dumps(payload)
+
+
+def canonical_signing_bytes_host_journal(
+    *,
+    event_hash: str | None,
+    previous_hash: str | None,
+    timestamp: Any,
+    tenant_id: str | None,
+    device_id: str | None,
+) -> bytes:
+    """Per-event canonical payload for a ``host_journal`` claim (Sprint UADR-1).
+
+    Same shape as exposure; only the claim type differs. Mirrors
+    ``tools/verify_event.py::canonical_signing_bytes_host_journal``.
+    """
+    payload = {
+        "claim_type": "host_journal",
         "device_id": device_id or "",
         "event_hash": event_hash or "",
         "previous_hash": previous_hash or "GENESIS",

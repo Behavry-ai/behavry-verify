@@ -9,7 +9,14 @@ Chain of trust::
     trust anchor -> package manifest signature -> Merkle root
                  -> per-event signatures -> per-agent hash chain
                  -> (1.2+) file digests -> event content -> authorization records
+                 -> (1.3 authority) provenance chain
     observer anchor -> observer signatures over observations
+                    -> (1.3 authority) Minotaur assessment bundles
+
+Two schemas are accepted: ``behavry.apr_evidence_package.v1`` (one session)
+and ``behavry.authority_evidence_package.v1`` (one agent's authority history,
+package 1.3, Sprint AG-3), which adds checks 12 to 14 (see
+:mod:`behavry_verify.authority`).
 
 From package_version 1.2 the producer exports every field a decision event's
 hash covers, so each ``event_hash`` is RECOMPUTED from content here rather than
@@ -40,11 +47,19 @@ from behavry_verify.anchor import (
     public_key_fingerprint,
     select_key_for_timestamp,
 )
+from behavry_verify.authority import (
+    AUTHORITY_PACKAGE_SCHEMA,
+    check_assessments,
+    check_lifecycle,
+    check_provenance,
+    is_authority_package,
+)
 from behavry_verify.canonical import (
     canonical_package_manifest_bytes,
     canonical_signing_bytes,
     canonical_signing_bytes_disclosure_ack,
     canonical_signing_bytes_exposure,
+    canonical_signing_bytes_host_journal,
 )
 from behavry_verify.hashbody import (
     AUTHORIZATION_CLAIM,
@@ -69,6 +84,10 @@ __all__ = [
 ]
 
 PACKAGE_SCHEMA = "behavry.apr_evidence_package.v1"
+#: Every schema this verifier understands. Neither draws a schema warning.
+KNOWN_SCHEMAS = frozenset({PACKAGE_SCHEMA, AUTHORITY_PACKAGE_SCHEMA})
+#: Root directory prefixes a package ZIP or unpacked directory may use.
+ROOT_PREFIXES = ("apr-", "authority-")
 
 # From package_version 1.1 onward, ``hash_chain.json``'s ``verified`` flag
 # asserts per-event integrity (each event's own hash reconstructs) rather than
@@ -173,14 +192,17 @@ def load_package_from_bytes(data: bytes) -> PackageComponents:
     except zipfile.BadZipFile as exc:
         raise PackageError(
             "not a readable ZIP archive (expected the .zip produced by "
-            "GET /api/v1/apr/{id}/export?format=zip)"
+            "GET /api/v1/apr/{id}/export?format=zip or "
+            "GET /api/v1/agents/{id}/authority/package)"
         ) from exc
 
 
 def load_package_from_path(path: Path) -> PackageComponents:
     """Load an evidence package from a ZIP file or an unpacked directory."""
     if path.is_dir():
-        roots = [p for p in path.iterdir() if p.is_dir() and p.name.startswith("apr-")]
+        roots = sorted(
+            p for p in path.iterdir() if p.is_dir() and p.name.startswith(ROOT_PREFIXES)
+        )
         base = roots[0] if roots else path
         members = {f.name: f.read_bytes() for f in base.glob("*.json")}
         return _parse_members(members)
@@ -226,6 +248,25 @@ def _event_payload(event: dict[str, Any]) -> bytes:
             timestamp=event.get("timestamp"),
             tenant_id=event.get("tenant_id"),
             device_id=event.get("device_id"),
+        )
+    if claim_type == "host_journal":
+        return canonical_signing_bytes_host_journal(
+            event_hash=event.get("event_hash"),
+            previous_hash=event.get("previous_hash"),
+            timestamp=event.get("timestamp"),
+            tenant_id=event.get("tenant_id"),
+            device_id=event.get("device_id"),
+        )
+    if claim_type == "agent_report":
+        # Authority packages carry the agent's own PostToolUse reports, signed
+        # over the agent-claim form (``agent_id`` and ``claim_type`` bound).
+        return canonical_signing_bytes_agent_claim(
+            claim_type="agent_report",
+            event_hash=event.get("event_hash"),
+            previous_hash=event.get("previous_hash"),
+            timestamp=event.get("timestamp"),
+            tenant_id=event.get("tenant_id"),
+            agent_id=event.get("agent_id"),
         )
     return canonical_signing_bytes(
         event_hash=event.get("event_hash"),
@@ -337,11 +378,12 @@ def verify_package(
     report.signature_algorithm = manifest.get("signature_algorithm")
     report.signing_backend = manifest.get("signing_backend")
 
-    if report.package_schema and report.package_schema != PACKAGE_SCHEMA:
+    if report.package_schema and report.package_schema not in KNOWN_SCHEMAS:
         report.add_warn(
             "schema",
             "Package schema recognized",
-            f"expected {PACKAGE_SCHEMA}, package declares {report.package_schema}",
+            f"expected one of {', '.join(sorted(KNOWN_SCHEMAS))}, package declares "
+            f"{report.package_schema}",
         )
 
     timeline = components.get("timeline.json") or []
@@ -491,6 +533,12 @@ def verify_package(
         e.get("id"): e for e in timeline if isinstance(e, dict) and e.get("id") is not None
     }
     _check_observations(report, components, by_id, observer_anchors or [])
+
+    # -- 12 to 14. Authority package (1.3) ------------------------------------
+    if is_authority_package(manifest, components):
+        check_provenance(report, components, manifest, anchor, raw_public_key, public_key)
+        check_assessments(report, components, manifest, observer_anchors or [])
+        check_lifecycle(report, components)
 
     return report.finalize()
 

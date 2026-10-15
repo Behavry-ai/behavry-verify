@@ -1,0 +1,208 @@
+{
+  "_comment": "Written by tests/vectors/generate_anchor_vectors.py from Behavry's own args_digest, digests, provenance and signer code. Test keys only.",
+  "jcs": [
+    {
+      "canonical": "{}",
+      "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "input": {}
+    },
+    {
+      "canonical": "[]",
+      "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "input": []
+    },
+    {
+      "canonical": "null",
+      "digest": null,
+      "input": null
+    },
+    {
+      "canonical": "{\"a\":[true,false,null],\"b\":1,\"c\":\"x\"}",
+      "digest": "sha256:210bd8e5501c622e789c4b9e6cd70edbfbe598f4725066bac3c1ffe0176ff0e3",
+      "input": {
+        "a": [
+          true,
+          false,
+          null
+        ],
+        "b": 1,
+        "c": "x"
+      }
+    },
+    {
+      "canonical": "{\"num\":[0,0,1,-1,1.5,1e+21,1e-7,123456789012345680000,0.1,9007199254740992]}",
+      "digest": "sha256:dd315dac43e9150330cae747bb7f6ef905fc0959638eb78854137dbf7477d927",
+      "input": {
+        "num": [
+          0,
+          -0.0,
+          1,
+          -1,
+          1.5,
+          1e+21,
+          1e-07,
+          123456789012345680000,
+          0.1,
+          9007199254740993
+        ]
+      }
+    },
+    {
+      "canonical": "{\"s\":\"quote\\\" backslash\\\\ \\b\\f\\n\\r\\t \\u0001 <>&   é 😀\"}",
+      "digest": "sha256:b14aec59ec85e482c172cbdf53a2394411d6a585ec116a78cd8d0ea66b09f7e8",
+      "input": {
+        "s": "quote\" backslash\\ \b\f\n\r\t \u0001 <>&   é 😀"
+      }
+    },
+    {
+      "canonical": "{\"Z\":5,\"a\":3,\"€\":1,\"😀\":2,\"ﬁ\":4}",
+      "digest": "sha256:147348d251cec8707c96c20a41c7544b63cec9d62510755f75c0292e630a391f",
+      "input": {
+        "Z": 5,
+        "a": 3,
+        "€": 1,
+        "ﬁ": 4,
+        "😀": 2
+      }
+    },
+    {
+      "canonical": "{\"nested\":{\"z\":{\"y\":[{\"a\":1,\"b\":2}]}},\"unicode_key_é\":\"v\"}",
+      "digest": "sha256:a2c11bdc0259aa302ede5703628c9a8882754e7a8c6eded35aff2267053b1e89",
+      "input": {
+        "nested": {
+          "z": {
+            "y": [
+              {
+                "a": 1,
+                "b": 2
+              }
+            ]
+          }
+        },
+        "unicode_key_é": "v"
+      }
+    }
+  ],
+  "jcs_errors": [
+    "nan",
+    "inf"
+  ],
+  "provenance": [
+    {
+      "canonical_body": "{\"actor\": \"admin@example.com\", \"agent_id\": \"agent-prov-1\", \"body_digest\": \"sha256:5d9e0585389eaead425a1b13a54212a7267f84d6519e58ef426bd5d01391935e\", \"claim_type\": \"provenance\", \"entry_type\": \"registered\", \"evidence_refs\": [], \"summary\": \"Agent registered\", \"tenant_id\": \"11111111-1111-1111-1111-111111111111\", \"timestamp\": \"2026-10-15T12:00:00+00:00\"}",
+      "entry": {
+        "actor": "admin@example.com",
+        "agent_id": "agent-prov-1",
+        "body": {
+          "name": "CI-Research-Agent"
+        },
+        "body_digest": "sha256:5d9e0585389eaead425a1b13a54212a7267f84d6519e58ef426bd5d01391935e",
+        "entry_hash": "3c9181a108872fff745621769c7e97571a5de59a2c4c817190fbd1d5202e3a95",
+        "entry_type": "registered",
+        "evidence_refs": [],
+        "id": "prov-0",
+        "previous_hash": null,
+        "signature_b64": "SkYhn7crL0Y3uMiGI46Igp1tae9B9me3b+LgPka7goUj4TNGmg72O/4rkaAe7X3UMAWemKp01pCH8mxPdBnDCQ==",
+        "signer_kid": "behavry-ed25519-anchor-vectors",
+        "summary": "Agent registered",
+        "tenant_id": "11111111-1111-1111-1111-111111111111",
+        "timestamp": "2026-10-15T12:00:00+00:00"
+      },
+      "signing_payload": "{\"agent_id\":\"agent-prov-1\",\"claim_type\":\"provenance\",\"event_hash\":\"3c9181a108872fff745621769c7e97571a5de59a2c4c817190fbd1d5202e3a95\",\"previous_hash\":\"GENESIS\",\"tenant_id\":\"11111111-1111-1111-1111-111111111111\",\"timestamp\":\"2026-10-15T12:00:00.000000+00:00\"}"
+    },
+    {
+      "canonical_body": "{\"actor\": \"system\", \"agent_id\": \"agent-prov-1\", \"body_digest\": \"sha256:b544975bd3b2a61c367bc7a366577f58c040545cdb978b61bc2c1b02cd736f0f\", \"claim_type\": \"provenance\", \"entry_type\": \"authority_mapped\", \"evidence_refs\": [], \"summary\": \"Authority mapped: 3 capabilities\", \"tenant_id\": \"11111111-1111-1111-1111-111111111111\", \"timestamp\": \"2026-10-15T12:01:00.000007+00:00\"}",
+      "entry": {
+        "actor": "system",
+        "agent_id": "agent-prov-1",
+        "body": {
+          "capabilities": [
+            "fs:read",
+            "secrets:read"
+          ],
+          "ratio": 0.5
+        },
+        "body_digest": "sha256:b544975bd3b2a61c367bc7a366577f58c040545cdb978b61bc2c1b02cd736f0f",
+        "entry_hash": "a058905d38498101280fd1af8545e755c3c46518158881fc27ceff3da0e9b5ab",
+        "entry_type": "authority_mapped",
+        "evidence_refs": [],
+        "id": "prov-1",
+        "previous_hash": "3c9181a108872fff745621769c7e97571a5de59a2c4c817190fbd1d5202e3a95",
+        "signature_b64": "rdKQNbWTm/p6ADeGdT77pH5OFoVrIhnhBrdfTdSeh5QQOifCDCkVb+nr5DFRLP947DY2eaCyUp09lfuE6Nu5Cg==",
+        "signer_kid": "behavry-ed25519-anchor-vectors",
+        "summary": "Authority mapped: 3 capabilities",
+        "tenant_id": "11111111-1111-1111-1111-111111111111",
+        "timestamp": "2026-10-15T12:01:00.000007+00:00"
+      },
+      "signing_payload": "{\"agent_id\":\"agent-prov-1\",\"claim_type\":\"provenance\",\"event_hash\":\"a058905d38498101280fd1af8545e755c3c46518158881fc27ceff3da0e9b5ab\",\"previous_hash\":\"3c9181a108872fff745621769c7e97571a5de59a2c4c817190fbd1d5202e3a95\",\"tenant_id\":\"11111111-1111-1111-1111-111111111111\",\"timestamp\":\"2026-10-15T12:01:00.000007+00:00\"}"
+    },
+    {
+      "canonical_body": "{\"actor\": \"minotaur-lab-01\", \"agent_id\": \"agent-prov-1\", \"body_digest\": \"sha256:727d7539355340ad662df653f32347d2bd4f33fce64feed591fbfb50dcbeb618\", \"claim_type\": \"provenance\", \"entry_type\": \"assessment\", \"evidence_refs\": [{\"assessment_id\": \"asmt-1\", \"bundle_digest\": \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"type\": \"assessment\"}], \"summary\": \"Assessment asmt-1 ingested\", \"tenant_id\": \"11111111-1111-1111-1111-111111111111\", \"timestamp\": \"2026-10-15T12:02:00.000014+00:00\"}",
+      "entry": {
+        "actor": "minotaur-lab-01",
+        "agent_id": "agent-prov-1",
+        "body": {
+          "assessment_id": "asmt-1"
+        },
+        "body_digest": "sha256:727d7539355340ad662df653f32347d2bd4f33fce64feed591fbfb50dcbeb618",
+        "entry_hash": "b3abd262d0fce4b2589b4329a49de96dce1145e8470e7420afccfe7132c20fc5",
+        "entry_type": "assessment",
+        "evidence_refs": [
+          {
+            "assessment_id": "asmt-1",
+            "bundle_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "type": "assessment"
+          }
+        ],
+        "id": "prov-2",
+        "previous_hash": "a058905d38498101280fd1af8545e755c3c46518158881fc27ceff3da0e9b5ab",
+        "signature_b64": "C2OV/oNGftS5ErHF7ZYtRTA/Q0dknYKRpoY+GfQC1yx5rdBpxCqmIkXnGjvra7ZkHkXZKh4fhsQFRqiTKg7JAQ==",
+        "signer_kid": "behavry-ed25519-anchor-vectors",
+        "summary": "Assessment asmt-1 ingested",
+        "tenant_id": "11111111-1111-1111-1111-111111111111",
+        "timestamp": "2026-10-15T12:02:00.000014+00:00"
+      },
+      "signing_payload": "{\"agent_id\":\"agent-prov-1\",\"claim_type\":\"provenance\",\"event_hash\":\"b3abd262d0fce4b2589b4329a49de96dce1145e8470e7420afccfe7132c20fc5\",\"previous_hash\":\"a058905d38498101280fd1af8545e755c3c46518158881fc27ceff3da0e9b5ab\",\"tenant_id\":\"11111111-1111-1111-1111-111111111111\",\"timestamp\":\"2026-10-15T12:02:00.000014+00:00\"}"
+    },
+    {
+      "canonical_body": "{\"actor\": \"system\", \"agent_id\": \"agent-prov-1\", \"body_digest\": \"sha256:1b03c720bc96e9b45a243a62a510528032c17d046e14dddfa53418bc5fafee99\", \"claim_type\": \"provenance\", \"entry_type\": \"authority_verified\", \"evidence_refs\": [{\"id\": \"evt-1\", \"kind\": \"audit_event\"}], \"summary\": \"secrets:read VERIFIED\", \"tenant_id\": \"11111111-1111-1111-1111-111111111111\", \"timestamp\": \"2026-10-15T12:03:00.000021+00:00\"}",
+      "entry": {
+        "actor": "system",
+        "agent_id": "agent-prov-1",
+        "body": {
+          "capability_id": "secrets:read",
+          "état": "vérifié"
+        },
+        "body_digest": "sha256:1b03c720bc96e9b45a243a62a510528032c17d046e14dddfa53418bc5fafee99",
+        "entry_hash": "8009bfb41568b5c512243e47da1fedd917ae2314ac7c12ce8ab36f41b9863d22",
+        "entry_type": "authority_verified",
+        "evidence_refs": [
+          {
+            "id": "evt-1",
+            "kind": "audit_event"
+          }
+        ],
+        "id": "prov-3",
+        "previous_hash": "b3abd262d0fce4b2589b4329a49de96dce1145e8470e7420afccfe7132c20fc5",
+        "signature_b64": "U/CdaalQ3KF/gPeOfBlCG0lyTseHx9wXn10PGihI+Qh8e+vDyXJg/Cf82X/tfY2zkBr8WMsgffJN82NSdEL9Cw==",
+        "signer_kid": "behavry-ed25519-anchor-vectors",
+        "summary": "secrets:read VERIFIED",
+        "tenant_id": "11111111-1111-1111-1111-111111111111",
+        "timestamp": "2026-10-15T12:03:00.000021+00:00"
+      },
+      "signing_payload": "{\"agent_id\":\"agent-prov-1\",\"claim_type\":\"provenance\",\"event_hash\":\"8009bfb41568b5c512243e47da1fedd917ae2314ac7c12ce8ab36f41b9863d22\",\"previous_hash\":\"b3abd262d0fce4b2589b4329a49de96dce1145e8470e7420afccfe7132c20fc5\",\"tenant_id\":\"11111111-1111-1111-1111-111111111111\",\"timestamp\":\"2026-10-15T12:03:00.000021+00:00\"}"
+    }
+  ],
+  "trust_anchor": {
+    "keys": [
+      {
+        "algorithm": "ed25519",
+        "kid": "behavry-ed25519-anchor-vectors",
+        "not_after": null,
+        "not_before": "2026-01-01T00:00:00+00:00",
+        "public_key": "jxSMTyjqtChOymBJsTJwkoAJjUfB0HRnM4JJ38FtnI0="
+      }
+    ],
+    "schema": "behavry.trust_anchor.v1"
+  }
+}
