@@ -159,11 +159,43 @@ A 1.5 package with an empty `anchors.json` (`anchor_head_digest` null) passes, w
 }
 ```
 
-`linked` is null for the first anchor. One limit remains: a party holding Behavry's key can drop the newest anchors and re-sign a manifest whose head matches what is left. The entries after it then read as not yet anchored. Only the head of the anchor store, obtained independently, closes that.
+`linked` is null for the first anchor. One limit remains: a party holding Behavry's key can drop the newest anchors and re-sign a manifest whose head matches what is left. The entries after it then read as not yet anchored. Package 1.6 and anchor heads, below, close that.
 
 Provenance entry types this verifier does not know, such as `device_bound`, are informational: they are hashed, chained and anchored like any other entry, and they neither add to nor take from the lifecycle line.
 
-#### Passing Minotaur's key
+### The run reaches both ends (package 1.6 and anchor heads)
+
+Package 1.5 proves nothing is missing inside the run, not that the run starts and ends where it should. Behavry Sprint AG-6 closes both ends.
+
+**The front: the predecessor (package 1.6).** `anchors.json` becomes `{"anchors": [...], "predecessor": ...}`. The predecessor is the tenant's anchor just before the run, of any schema, as a **header-only record** (`"records": "header"`, no `events` and no `provenance`). The signed manifest states its digest as `anchor_predecessor_digest`. Check 15 then requires:
+
+- **P1.** When the first anchor's `previous_anchor_digest` is set, the predecessor must be present, its digest must equal that pointer and the manifest's `anchor_predecessor_digest`, and it must verify as a header-only record under the same trust anchor and for the same tenant. When the run is empty or starts the chain, the predecessor and the manifest field must both be null. Anything else **fails**.
+- **P2.** When the predecessor is v3, provenance anchoring had already begun, so an entry older than the run is `missing` and **fails**: the anchors sealing it were left out. When it is v1 or v2, or there is none, those entries are `unanchored` (they predate v3), as in 1.5.
+
+**The tail: anchor heads (any package from 1.4).** The newest anchors can only be shown to be missing by something obtained outside the package. Ask the tenant for its newest sealed anchor, `GET /api/v1/audit/anchors/head` (or any anchor, `GET /api/v1/audit/anchors/{id}/header`), and pass it with `--anchor-head`, which may repeat:
+
+- **H1.** Each head must verify, as a header-only or a full record, and be for the package's tenant. A head that does not is reported, is not used, and **fails** the check: a supplied head that does not verify is a finding.
+- **H2.** A head with the same `period_start` as an anchor in the package (or its predecessor) but a different digest is a **fork**, and fails.
+- **H3.** Every entry older than a verified head's `period_end` must be `anchored`. One that would read `not_yet_anchored` becomes `missing`, "sealed by anchor <head id> (<period>), which the package does not carry", and the check **fails**. When the head was sealed after the package was created, the finding adds that the package may simply predate the head, and to export a fresh one.
+- **H4.** With no head, the check passes or fails on the 1.5 rules, and the report says "no independent anchor head supplied: truncation of the newest anchors cannot be ruled out".
+
+A head covers only what was sealed when you obtained it. For the strongest statement, take a fresh head at verification time, or read the newest object in the tenant's WORM bucket yourself. A 1.6 report, or any report given a head, adds these keys to `provenance_anchoring` (`predecessor` is 1.6 only, and is null when the run starts the chain):
+
+```json
+{
+  "heads": [{"anchor_id": "...", "period_start": "...", "period_end": "...",
+             "anchor_digest": "...", "verified": true, "tsa_gen_time": "...",
+             "failed_checks": []}],
+  "head_note": null,
+  "predecessor": {"anchor_id": "...", "schema": "behavry.audit_anchor.v3",
+                  "anchor_digest": "...", "verified": true, "period_start": "...",
+                  "period_end": "...", "failed_checks": []}
+}
+```
+
+`head_note` holds the H4 text when no head was supplied, and is null otherwise. A 1.4 or 1.5 report with no head keeps its earlier shape exactly.
+
+### Passing Minotaur's key
 
 Minotaur publishes its observer public key as a small JSON file. One key signs both its observations and its assessment bundles:
 
@@ -198,6 +230,8 @@ A `behavry.audit_anchor.v3` anchor (Behavry Sprint AG-4) also commits to the per
 
 A provenance-only v3 record (`"records": "provenance"`, as a package 1.5 carries) is accepted too. Its events are not carried, so the four event checks are reported **skipped**, with the reason, and never as passed.
 
+A header-only record of any schema (`"records": "header"`, what `/api/v1/audit/anchors/head` and `/api/v1/audit/anchors/{id}/header` return) carries no records at all. Its digest, Behavry signature and RFC 3161 token are checked, and the event and provenance record checks are reported **skipped** with the reason "header-only record: the signed bytes are verified, the records they commit to are not carried", never as passed.
+
 `openssl ts -verify` alone cannot replace the first five checks. It validates a token against a digest you give it, and it cannot tell you that the digest is the one these events produce. That link is the claim.
 
 Be precise about the TSA. Without `--tsa-roots` the report says **"imprint checked, TSA certificate chain not validated"**: the token's signature was checked against the certificate it embeds, but nothing ties that certificate to an authority you trust. With `--tsa-roots` the chain is walked to your roots. Each issuer's signature, CA flag and validity at `genTime` are checked, and the TSA certificate must carry the `timeStamping` key usage. **Revocation (CRL or OCSP) is never checked**, because this tool makes no network calls. An anchor with no token (no TSA configured, or a TSA outage) still verifies, and the report states that no third party attests to the time. A token with no TSA signature at all is flagged as a warning, because anyone could have produced it. An anchor that carries no Behavry signature is reported NOT VERIFIED, because it is unproven who sealed it.
@@ -229,7 +263,7 @@ A `package_version` this tool cannot parse is treated as older than 1.1, so it t
 
 ### Web
 
-Go to [verify.behavry.ai](https://verify.behavry.ai), drop in the `.zip`, and optionally add the trust anchor, one or more observer key files (such as Minotaur's) and your TSA roots. A separate form on the same page verifies an audit anchor JSON.
+Go to [verify.behavry.ai](https://verify.behavry.ai), drop in the `.zip`, and optionally add the trust anchor, one or more observer key files (such as Minotaur's), your TSA roots and one or more anchor heads. A separate form on the same page verifies an audit anchor JSON.
 
 **Nothing you submit is stored, logged, or forwarded.** The package is verified in memory and discarded. It is someone's audit trail from a regulated environment; the only defensible retention policy is none.
 
@@ -261,6 +295,13 @@ behavry-verify --package authority-agent-123.zip --trust-anchor anchor.json \
                --observer-anchor minotaur-observer-key.json --tsa-roots your-tsa-roots.pem
 ```
 
+Authority package with the tenant's anchor head, obtained from Behavry separately (`GET /api/v1/audit/anchors/head`), so a run cut short at its newest anchors fails. `--anchor-head` may repeat:
+
+```bash
+behavry-verify --package authority-agent-123.zip --trust-anchor anchor.json \
+               --observer-anchor minotaur-observer-key.json --anchor-head anchor-head.json
+```
+
 Audit anchor, optionally with your TSA roots. Repeat `--audit-anchor` to also walk a set for missing periods:
 
 ```bash
@@ -279,8 +320,11 @@ curl -X POST https://verify.behavry.ai/api/v1/verify \
   -F trust_anchor=@behavry-trust-anchor.json \
   -F observer_anchor=@minotaur-observer-key.json \  # optional, repeatable file
   -F observer_anchor=@edr-observer.json \
-  -F tsa_roots=@your-tsa-roots.pem                  # optional, for 1.4 anchors
+  -F tsa_roots=@your-tsa-roots.pem \                # optional, for 1.4 anchors
+  -F anchor_head=@anchor-head.json                  # optional, repeatable file
 ```
+
+`anchor_head` is a file field too, and may repeat, like `--anchor-head`. `POST /api/v1/verify.txt` takes it as well.
 
 `observer_anchor` is a file field and may repeat, one observer key file each, like `--observer-anchor`. The older `observer_anchors` field (JSON text of one anchor or a list) still works, and both are combined.
 
