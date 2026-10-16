@@ -58,63 +58,96 @@
 
   // -- submit ---------------------------------------------------------------
 
+  var observersInput = document.getElementById("observers");
+  var tsaRootsInput = document.getElementById("tsa-roots");
+  var anchorForm = document.getElementById("anchor-form");
+  var auditAnchorInput = document.getElementById("audit-anchor");
+  var anchorTrustInput = document.getElementById("anchor-trust");
+  var anchorTsaRootsInput = document.getElementById("anchor-tsa-roots");
+  var anchorSubmit = document.getElementById("anchor-submit");
+  var anchorStatus = document.getElementById("anchor-status");
+
+  // Small JSON and PEM files are read client-side so the server receives them
+  // as text and never has to guess at an encoding. Resolves "" for no file.
+  function readText(input) {
+    var file = input.files && input.files[0];
+    return new Promise(function (resolve, reject) {
+      if (!file) { resolve(""); return; }
+      var reader = new FileReader();
+      reader.onload = function () { resolve(String(reader.result)); };
+      reader.onerror = function () { reject(new Error("Could not read " + file.name + ".")); };
+      reader.readAsText(file);
+    });
+  }
+
+  function post(url, body, button, statusNode) {
+    button.disabled = true;
+    setStatus(statusNode, "Verifying…", false);
+    return fetch(url, { method: "POST", body: body })
+      .then(function (response) {
+        return response.json().then(function (payload) {
+          return { ok: response.ok, payload: payload };
+        });
+      })
+      .then(function (outcome) {
+        button.disabled = false;
+        if (!outcome.ok) {
+          setStatus(statusNode, outcome.payload.detail || "The request could not be processed.", true);
+          result.hidden = true;
+          return;
+        }
+        setStatus(statusNode, "", false);
+        render(outcome.payload);
+      })
+      .catch(function () {
+        button.disabled = false;
+        setStatus(statusNode, "Could not reach the verification service.", true);
+      });
+  }
+
   form.addEventListener("submit", function (e) {
     e.preventDefault();
     var file = packageInput.files && packageInput.files[0];
     if (!file) {
-      setStatus("Choose an evidence package first.", true);
+      setStatus(status, "Choose an evidence package first.", true);
       return;
     }
-
     var body = new FormData();
     body.append("package", file);
-
-    var anchorFile = anchorInput.files && anchorInput.files[0];
-    var send = function () {
-      submit.disabled = true;
-      setStatus("Verifying…", false);
-      fetch("/api/v1/verify", { method: "POST", body: body })
-        .then(function (response) {
-          return response.json().then(function (payload) {
-            return { ok: response.ok, payload: payload };
-          });
-        })
-        .then(function (outcome) {
-          submit.disabled = false;
-          if (!outcome.ok) {
-            setStatus(outcome.payload.detail || "The request could not be processed.", true);
-            result.hidden = true;
-            return;
-          }
-          setStatus("", false);
-          render(outcome.payload);
-        })
-        .catch(function () {
-          submit.disabled = false;
-          setStatus("Could not reach the verification service.", true);
-        });
-    };
-
-    if (anchorFile) {
-      // Read the anchor client-side so the server receives it as text and
-      // never has to guess at an encoding.
-      var reader = new FileReader();
-      reader.onload = function () {
-        body.append("trust_anchor", String(reader.result));
-        send();
-      };
-      reader.onerror = function () {
-        setStatus("Could not read the trust anchor file.", true);
-      };
-      reader.readAsText(anchorFile);
-    } else {
-      send();
-    }
+    // Observer key files go up as files, one observer_anchor field each.
+    Array.prototype.forEach.call(observersInput.files || [], function (observer) {
+      body.append("observer_anchor", observer);
+    });
+    Promise.all([readText(anchorInput), readText(tsaRootsInput)])
+      .then(function (texts) {
+        if (texts[0]) body.append("trust_anchor", texts[0]);
+        if (texts[1]) body.append("tsa_roots", texts[1]);
+        return post("/api/v1/verify", body, submit, status);
+      })
+      .catch(function (err) { setStatus(status, err.message, true); });
   });
 
-  function setStatus(text, isError) {
-    status.textContent = text;
-    status.classList.toggle("error", Boolean(isError));
+  anchorForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var file = auditAnchorInput.files && auditAnchorInput.files[0];
+    if (!file) {
+      setStatus(anchorStatus, "Choose an audit anchor first.", true);
+      return;
+    }
+    var body = new FormData();
+    body.append("audit_anchor", file);
+    Promise.all([readText(anchorTrustInput), readText(anchorTsaRootsInput)])
+      .then(function (texts) {
+        if (texts[0]) body.append("trust_anchor", texts[0]);
+        if (texts[1]) body.append("tsa_roots", texts[1]);
+        return post("/api/v1/verify-anchor", body, anchorSubmit, anchorStatus);
+      })
+      .catch(function (err) { setStatus(anchorStatus, err.message, true); });
+  });
+
+  function setStatus(node, text, isError) {
+    node.textContent = text;
+    node.classList.toggle("error", Boolean(isError));
   }
 
   // -- rendering ------------------------------------------------------------
@@ -149,12 +182,27 @@
     verdict.appendChild(list);
 
     var meta = el("dl", "meta");
+    var anchorSummary = report.anchor_summary || {};
+    var anchoring = report.provenance_anchoring;
+    var isAnchor = report.kind === "audit_anchor";
     [
       ["APR identifier", report.apr_identifier],
       ["Signer", signerLine(report)],
       ["Events", report.event_count],
       ["Root hash", report.root_hash],
-      ["Package created", report.created_at],
+      [isAnchor ? "Anchor sealed" : "Package created", report.created_at],
+      ["Tenant", anchorSummary.tenant_id],
+      ["Period", anchorSummary.period_start
+        ? anchorSummary.period_start + " to " + anchorSummary.period_end : null],
+      ["Provenance entries", anchorSummary.provenance_count],
+      ["Provenance root", anchorSummary.provenance_root],
+      ["TSA genTime", anchorSummary.tsa_gen_time],
+      ["Provenance anchoring", anchoring
+        ? anchoring.anchored + " anchored, " + anchoring.not_yet_anchored +
+          " not yet anchored, " + anchoring.missing + " missing" +
+          (anchoring.unanchored ? ", " + anchoring.unanchored + " unanchored" : "") +
+          " (" + anchoring.anchor_count + " anchor" + (anchoring.anchor_count === 1 ? "" : "s") + ")"
+        : null],
       ["Verified at", report.verified_at],
     ].forEach(function (pair) {
       if (pair[1] === null || pair[1] === undefined || pair[1] === "") return;
@@ -175,6 +223,14 @@
   function summarize(report) {
     var checks = report.checks || [];
     var failed = checks.filter(function (c) { return c.status === "fail"; });
+    if (report.verified && report.kind === "audit_anchor") {
+      return (
+        "Every check passed. This anchor is exactly what was sealed, and its " +
+        (report.event_count || 0) + " events and " +
+        ((report.anchor_summary || {}).provenance_count || 0) +
+        " provenance entries reproduce its roots."
+      );
+    }
     if (report.verified) {
       return (
         "Every check passed. This package is exactly what was signed, and its " +

@@ -251,3 +251,17 @@ def test_malformed_observer_anchors_are_a_400(client, builder):
         data={"observer_anchors": "{not json"},
     )
     assert response.status_code == 400
+
+
+def test_page_offers_anchor_and_observer_key_uploads(client):
+    """G-7: the page takes an audit anchor and observer key files, wired to the API."""
+    page = client.get("/").text
+    for element in (
+        'id="observers"', "multiple", 'id="tsa-roots"', 'id="anchor-form"',
+        'id="audit-anchor"', 'id="anchor-trust"', 'id="anchor-tsa-roots"',
+    ):
+        assert element in page, element
+    script = client.get("/static/app.js").text
+    assert '"observer_anchor"' in script
+    assert "/api/v1/verify-anchor" in script
+    assert '"audit_anchor"' in script and '"tsa_roots"' in script

@@ -103,6 +103,38 @@ def _parse_observer_anchors(raw: str | None) -> list[dict[str, Any]]:
         raise HTTPException(400, str(exc)) from exc
 
 
+async def _parse_observer_files(uploads: list[UploadFile] | None) -> list[dict[str, Any]]:
+    """Observer key files uploaded as files (the web page's G-7 input).
+
+    Each file holds one observer anchor or a list of them, exactly what the
+    CLI's repeatable ``--observer-anchor`` reads.
+    """
+    out: list[dict[str, Any]] = []
+    for upload in uploads or []:
+        data = await _read_upload(upload)
+        if not data.strip():
+            continue
+        name = upload.filename or "observer key file"
+        try:
+            value = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HTTPException(400, f"{name} is not valid JSON: {exc}") from exc
+        try:
+            out.extend(validate_observer_anchors(value))
+        except AnchorError as exc:
+            raise HTTPException(400, f"{name}: {exc}") from exc
+    return out
+
+
+def _parse_tsa_roots(raw: str | None) -> list[Any] | None:
+    if not raw or not raw.strip():
+        return None
+    try:
+        return load_pem_certificates(raw.encode("utf-8"))
+    except ValueError as exc:
+        raise HTTPException(400, f"tsa_roots is not a PEM certificate bundle: {exc}") from exc
+
+
 async def _read_upload(upload: UploadFile) -> bytes:
     data = await upload.read()
     if len(data) > MAX_UPLOAD_BYTES:
@@ -134,6 +166,7 @@ def _verify(
     data: bytes,
     anchor: dict[str, Any] | None,
     observer_anchors: list[dict[str, Any]] | None = None,
+    tsa_roots: list[Any] | None = None,
 ) -> VerificationReport:
     try:
         components = load_package_from_bytes(data)
@@ -145,6 +178,7 @@ def _verify(
         anchor=resolved,
         trust_source=source,
         observer_anchors=observer_anchors,
+        tsa_roots=tsa_roots,
     )
     if source is TrustSource.NONE and report.error is None:
         report.error = (
@@ -163,13 +197,20 @@ async def verify_endpoint(
     package_url: Annotated[str | None, Form()] = None,
     trust_anchor: Annotated[str | None, Form()] = None,
     observer_anchors: Annotated[str | None, Form()] = None,
+    observer_anchor: Annotated[list[UploadFile] | None, File()] = None,
+    tsa_roots: Annotated[str | None, Form()] = None,
 ) -> JSONResponse:
     """Verify an evidence package supplied as an upload or by URL.
 
     ``trust_anchor`` is the JSON text of an anchor obtained from the issuing
     tenant. Supplying it is what makes the result independent of Behavry.
     ``observer_anchors`` is the JSON text of one observer anchor or a list of
-    them, used to check observer signatures on the package's observations.
+    them, used to check observer signatures on the package's observations and
+    the Minotaur assessment bundles of an authority package.
+    ``observer_anchor`` is the same as files, repeatable (one observer key file
+    each, as the CLI's ``--observer-anchor``); both sources are combined.
+    ``tsa_roots`` is the PEM text of TSA roots the caller trusts, for the audit
+    anchors a 1.4 authority package carries (check 15).
     """
     if package is None and not package_url:
         raise HTTPException(400, "supply either a package file or a package_url")
@@ -178,6 +219,8 @@ async def verify_endpoint(
 
     anchor = _parse_anchor(trust_anchor)
     observers = _parse_observer_anchors(observer_anchors)
+    observers.extend(await _parse_observer_files(observer_anchor))
+    roots = _parse_tsa_roots(tsa_roots)
 
     if package is not None:
         data = await _read_upload(package)
@@ -187,7 +230,7 @@ async def verify_endpoint(
         except FetchError as exc:
             raise HTTPException(400, str(exc)) from exc
 
-    report = _verify(data, anchor, observers)
+    report = _verify(data, anchor, observers, roots)
     # A failed verification is a successful request: the caller asked a
     # question and got a definitive answer. Only malformed input is a 4xx.
     return JSONResponse(report.to_dict())
@@ -198,14 +241,19 @@ async def verify_text_endpoint(
     package: Annotated[UploadFile | None, File()] = None,
     trust_anchor: Annotated[str | None, Form()] = None,
     observer_anchors: Annotated[str | None, Form()] = None,
+    observer_anchor: Annotated[list[UploadFile] | None, File()] = None,
+    tsa_roots: Annotated[str | None, Form()] = None,
 ) -> PlainTextResponse:
     """Same verification, rendered as the plain-text report (for CI use)."""
     if package is None:
         raise HTTPException(400, "supply a package file")
+    observers = _parse_observer_anchors(observer_anchors)
+    observers.extend(await _parse_observer_files(observer_anchor))
     report = _verify(
         await _read_upload(package),
         _parse_anchor(trust_anchor),
-        _parse_observer_anchors(observer_anchors),
+        observers,
+        _parse_tsa_roots(tsa_roots),
     )
     return PlainTextResponse(
         report.to_text(), status_code=200 if report.verified else 422
@@ -234,12 +282,7 @@ async def verify_anchor_endpoint(
     if not isinstance(export, dict):
         raise HTTPException(400, "audit anchor must be a JSON object")
     anchor = _parse_anchor(trust_anchor)
-    roots = None
-    if tsa_roots and tsa_roots.strip():
-        try:
-            roots = load_pem_certificates(tsa_roots.encode("utf-8"))
-        except ValueError as exc:
-            raise HTTPException(400, f"tsa_roots is not a PEM certificate bundle: {exc}") from exc
+    roots = _parse_tsa_roots(tsa_roots)
 
     source = TrustSource.SUPPLIED_ANCHOR if anchor is not None else TrustSource.NONE
     if anchor is None:

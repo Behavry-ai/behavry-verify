@@ -509,7 +509,7 @@ MINOTAUR_TYPE = "minotaur"
 AUTHORITY_DIGESTED_FILES: tuple[str, ...] = (
     "timeline.json", "policy_decisions.json", "hash_chain.json",
     "authorization_records.json", "observations.json", "provenance.json",
-    "assessments.json", "mismatches.json", "authority.json",
+    "assessments.json", "mismatches.json", "authority.json", "anchors.json",
 )
 
 
@@ -545,6 +545,9 @@ class AuthorityPackageBuilder(PackageBuilder):
     applied, then a mismatch, revocation, demotion, revalidation request, a
     second assessment and the authority re-applied.
     """
+
+    #: The authority package version ``assemble`` writes.
+    authority_version = "1.3"
 
     def __init__(self) -> None:
         super().__init__(package_version="1.3")
@@ -761,7 +764,7 @@ class AuthorityPackageBuilder(PackageBuilder):
         manifest.update(
             {
                 "schema": AUTHORITY_SCHEMA,
-                "package_version": "1.3",
+                "package_version": self.authority_version,
                 "apr_identifier": f"AUTH-{AGENT_ID}",
                 "agent_id": AGENT_ID,
                 "tenant_id": self.tenant_id,
@@ -773,6 +776,11 @@ class AuthorityPackageBuilder(PackageBuilder):
                 "provenance_count": len(entries),
                 "provenance_head": entries[-1]["entry_hash"] if entries else None,
                 "assessment_count": len(data_files["assessments.json"]["assessments"]),
+                **(
+                    {"anchor_count": len(data_files["anchors.json"]["anchors"])}
+                    if "anchors.json" in data_files
+                    else {}
+                ),
                 "file_digests": {
                     name: "sha256:" + _sha256_hex(_dump(data_files[name]))
                     for name in AUTHORITY_DIGESTED_FILES
@@ -802,3 +810,173 @@ class AuthorityPackageBuilder(PackageBuilder):
 @pytest.fixture
 def authority_builder() -> AuthorityPackageBuilder:
     return AuthorityPackageBuilder()
+
+
+# ---------------------------------------------------------------------------
+# Authority evidence package 1.4 with audit anchors v3 (Sprint AG-4 G-1)
+# ---------------------------------------------------------------------------
+
+ANCHOR_V3 = "behavry.audit_anchor.v3"
+
+
+def _export_iso(value: str) -> str:
+    """``anchoring._iso``: UTC with microseconds always rendered."""
+    dt = datetime.fromisoformat(value)
+    return dt.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+def canonical_anchor_v3_bytes(anchor: dict[str, Any]) -> bytes:
+    """AG4-CONTRACTS section 1, written out independently of the verifier's copy."""
+    payload = {
+        "schema": ANCHOR_V3,
+        "tenant_id": anchor["tenant_id"] or "",
+        "period_start": anchor["period_start"],
+        "period_end": anchor["period_end"],
+        "event_count": anchor["event_count"],
+        "merkle_root": anchor["merkle_root"],
+        "first_event_hash": anchor["first_event_hash"] or "",
+        "last_event_hash": anchor["last_event_hash"] or "",
+        "previous_anchor_digest": anchor["previous_anchor_digest"] or "",
+        "provenance_count": anchor["provenance_count"],
+        "provenance_root": anchor["provenance_root"],
+        "first_provenance_hash": anchor["first_provenance_hash"] or "",
+        "last_provenance_hash": anchor["last_provenance_hash"] or "",
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+
+
+def provenance_record(entry: dict[str, Any]) -> dict[str, Any]:
+    """``anchoring._provenance_record``: hashes and signatures, never summary or body."""
+    return {
+        "id": entry["id"],
+        "agent_id": entry["agent_id"],
+        "timestamp": _export_iso(entry["timestamp"]),
+        "entry_type": entry["entry_type"],
+        "entry_hash": entry["entry_hash"],
+        "previous_hash": entry["previous_hash"],
+        "signer_kid": entry["signer_kid"],
+        "signature_b64": entry["signature_b64"],
+    }
+
+
+class AnchoredAuthorityPackageBuilder(AuthorityPackageBuilder):
+    """A 1.4 authority package whose ``anchors.json`` seals part of its provenance.
+
+    The eleven provenance entries are a minute apart from 11:00. Two v3
+    anchors, chained by AUD-LINK, seal 11:00-11:05 (entries 0 to 4) and
+    11:05-11:08 (entries 5 to 7), each timestamped by a test TSA. Entries 8 to
+    10 are newer than the last sealed period: not yet anchored.
+    """
+
+    authority_version = "1.4"
+
+    def __init__(self, *, tsa: Any | None = None) -> None:
+        from tests.tsa import TestTSA
+
+        super().__init__()
+        self.tsa = tsa if tsa is not None else TestTSA()
+        base = datetime(2026, 10, 15, 11, 0, 0, tzinfo=UTC)
+        self.periods = [
+            (base, base + timedelta(minutes=5)),
+            (base + timedelta(minutes=5), base + timedelta(minutes=8)),
+        ]
+        self.anchors = self.seal_periods()
+
+    def entries_in(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        return [
+            e for e in self.entries if start <= datetime.fromisoformat(e["timestamp"]) < end
+        ]
+
+    def seal_periods(self) -> list[dict[str, Any]]:
+        anchors: list[dict[str, Any]] = []
+        previous: str | None = None
+        for start, end in self.periods:
+            sealed = self.seal_anchor(start, end, self.entries_in(start, end), previous)
+            anchors.append(sealed)
+            previous = sealed["anchor_digest"]
+        return anchors
+
+    def seal_anchor(
+        self,
+        start: datetime,
+        end: datetime,
+        entries: list[dict[str, Any]],
+        previous_anchor_digest: str | None,
+        *,
+        timestamped: bool = True,
+        records: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """What ``seal_period`` writes and ``anchor_export_payload`` exports (v3).
+
+        No audit events fall in these periods (the package's events are in
+        June), which the producer seals all the same: a period with provenance
+        but no events is still sealed.
+        """
+        records = records if records is not None else [provenance_record(e) for e in entries]
+        hashes = [r["entry_hash"] for r in records if r.get("entry_hash")]
+        sealed_at = end + timedelta(seconds=4)
+        anchor: dict[str, Any] = {
+            "schema": ANCHOR_V3,
+            "content_policy": "Tamper-evidence layer only.",
+            "anchor_id": f"anchor-{start.strftime('%H%M')}",
+            "tenant_id": self.tenant_id,
+            "period_start": start.isoformat(timespec="microseconds"),
+            "period_end": end.isoformat(timespec="microseconds"),
+            "event_count": 0,
+            "merkle_root": merkle_root([]),
+            "first_event_hash": None,
+            "last_event_hash": None,
+            "previous_anchor_digest": previous_anchor_digest,
+            "provenance_count": len(records),
+            "provenance_root": merkle_root(hashes),
+            "first_provenance_hash": hashes[0] if hashes else None,
+            "last_provenance_hash": hashes[-1] if hashes else None,
+        }
+        canonical = canonical_anchor_v3_bytes(anchor)
+        digest = hashlib.sha256(canonical).digest()
+        tsa: dict[str, Any] = {
+            "status": "disabled", "url": None, "gen_time": None, "policy": None,
+            "serial_number": None, "token_der_b64": None,
+        }
+        if timestamped:
+            gen_time = end + timedelta(seconds=3)
+            token, serial = self.tsa.stamp(digest, gen_time)
+            tsa = {
+                "status": "granted",
+                "url": "https://tsa.example.test/tsr",
+                "gen_time": gen_time.isoformat(timespec="microseconds"),
+                "policy": "1.3.6.1.4.1.13762.3",
+                "serial_number": str(serial),
+                "token_der_b64": base64.b64encode(token).decode("ascii"),
+            }
+        anchor.update(
+            {
+                "anchor_digest": digest.hex(),
+                "signature": base64.b64encode(self.private_key.sign(canonical)).decode("ascii"),
+                "signer_kid": self.kid,
+                "signing_algorithm": "ed25519",
+                "signing_backend": "internal",
+                "tsa": tsa,
+                "sealed_at": sealed_at.isoformat(timespec="microseconds"),
+                "events": [],
+                "provenance": records,
+            }
+        )
+        return anchor
+
+    def components(self) -> dict[str, Any]:
+        base = PackageBuilder.components(self)
+        built = super().components()
+        data = {
+            k: v for k, v in built.items()
+            if k not in ("manifest.json", "signature.json", "verification_metadata.json")
+        }
+        data["anchors.json"] = {"anchors": self.anchors}
+        return self.assemble(base, data)
+
+
+@pytest.fixture
+def anchored_builder() -> AnchoredAuthorityPackageBuilder:
+    return AnchoredAuthorityPackageBuilder()

@@ -7,7 +7,7 @@ This is the code behind [verify.behavry.ai](https://verify.behavry.ai), plus the
 It verifies three kinds of Behavry evidence:
 
 - an **APR evidence package**: the sealed export of a single Agent Provenance Record, meaning what an AI agent did in one session, in order, with each step hash-linked and signed;
-- an **authority evidence package** (package 1.3): one agent's whole authority history. It covers what it was assessed for, which independent assessment verified it, what was applied, what an observer saw, what was revoked, and how it was revalidated;
+- an **authority evidence package** (package 1.3 and 1.4): one agent's whole authority history. It covers what it was assessed for, which independent assessment verified it, what was applied, what an observer saw, what was revoked, and how it was revalidated. From 1.4 it also carries the audit anchors that timestamped that history;
 - an **audit anchor**: a tenant's audit trail for one period, sealed under a Merkle root and timestamped by an RFC 3161 authority whose key Behavry does not hold.
 
 For each, it answers one question without asking you to trust the answer:
@@ -57,6 +57,7 @@ If a result matters, get the trust anchor from the issuing tenant directly. Thei
 ✓ Provenance chain valid        the agent's provenance, linked from genesis (authority 1.3)
 ✓ Assessment bundles valid      Minotaur's signed assessments, against its key (authority 1.3)
 i Authority lifecycle           which golden-path steps the history evidences (informational)
+✓ Provenance anchored           each provenance entry is in a timestamped audit anchor (authority 1.4)
 ```
 
 Every check runs independently. Unlike a first-failure verifier, a broken hash chain still tells you whether the signature was good, because "signed by Behavry but missing an event" and "not signed at all" are entirely different findings.
@@ -104,6 +105,35 @@ The report also prints the observers' own verdicts (`match`, `mismatch`, `absent
 
 A bundle whose Minotaur key you did not supply is reported `SKIPPED`, meaning not independently verified, and never as a pass. A provenance entry whose body was redacted (`body` null) still verifies through `body_digest`, and the report says how many were.
 
+### Provenance anchored (package 1.4)
+
+Checks 12 to 14 rest on Behavry's key. A party holding that key can rewrite a provenance entry, re-chain everything after it and re-sign the manifest, and those checks still pass. Package 1.4 closes that gap with `anchors.json`: every v3 audit anchor (below) whose period holds one of the package's provenance entries. Each anchor commits to the period's provenance `entry_hash`es under a Merkle root, inside bytes a third-party TSA timestamped when the period was sealed. A later rewrite produces a hash that anchor does not hold.
+
+Check 15, `provenance_anchoring`, verifies each anchor exactly as `--audit-anchor` would (digest, Behavry signature, RFC 3161 imprint and TSA signature, the chain to `--tsa-roots` if you supply them, and the provenance root recomputed from its records), checks the manifest's `anchor_count` and that each anchor is for the package's tenant, and then classifies every provenance entry:
+
+| Class | Meaning | Verdict |
+|---|---|---|
+| `anchored` | its `entry_hash` is in an anchor whose checks all pass; the report gives that anchor's TSA `genTime` (or "no TSA") | passes |
+| `not_yet_anchored` | its timestamp is at or after the latest anchor's `period_end`: the period is not sealed yet | passes, reported |
+| `missing` | its timestamp is inside an included v3 anchor's period, but its hash is not in that anchor: it was added or altered after sealing | **fails** |
+| `unanchored` | no anchor in the package covers its time, or only a v1/v2 anchor does (those predate provenance anchoring) | passes; a `warn` when no anchor covers an entry inside the sealed span, since an anchor may have been withheld |
+| `anchor_unverified` | its hash is in an anchor whose own checks did not pass | the anchor's failure fails the check |
+
+Packages older than 1.4 skip check 15 and say why. The JSON report carries the detail as `provenance_anchoring`:
+
+```json
+{
+  "anchor_count": 2,
+  "anchored": 8, "not_yet_anchored": 3, "missing": 0, "unanchored": 0, "anchor_unverified": 0,
+  "anchors": [{"anchor_id": "...", "schema": "behavry.audit_anchor.v3",
+               "period_start": "...", "period_end": "...", "anchor_digest": "...",
+               "provenance_count": 5, "verified": true, "failed_checks": [],
+               "signature": "pass", "tsa_gen_time": "...", "tsa_chain": "pass"}],
+  "entries": [{"id": "...", "entry_hash": "...", "timestamp": "...", "status": "anchored",
+               "anchor_id": "...", "tsa_gen_time": "...", "reason": null}]
+}
+```
+
 #### Passing Minotaur's key
 
 Minotaur publishes its observer public key as a small JSON file. One key signs both its observations and its assessment bundles:
@@ -134,6 +164,8 @@ An evidence package proves that the holder of a key vouched for a record. That c
 ✓ TSA signature valid                      the TSA's CMS signature over the token
 ✓ TSA certificate chain valid              to TSA roots you supply (--tsa-roots)
 ```
+
+A `behavry.audit_anchor.v3` anchor (Behavry Sprint AG-4) also commits to the period's agent provenance: `provenance_count`, `provenance_root` and the first and last `entry_hash` are inside the signed and timestamped bytes, and the export carries hash-only provenance records (never a summary or body). For v3 four more checks run: the provenance root recomputed from those records, the count, the first and last hashes, and each record's own Behavry signature. The report shows the provenance figures. v1 and v2 anchors verify exactly as before.
 
 `openssl ts -verify` alone cannot replace the first five checks. It validates a token against a digest you give it, and it cannot tell you that the digest is the one these events produce. That link is the claim.
 
@@ -166,7 +198,7 @@ A `package_version` this tool cannot parse is treated as older than 1.1, so it t
 
 ### Web
 
-Go to [verify.behavry.ai](https://verify.behavry.ai), drop in the `.zip`, optionally add the trust anchor.
+Go to [verify.behavry.ai](https://verify.behavry.ai), drop in the `.zip`, and optionally add the trust anchor, one or more observer key files (such as Minotaur's) and your TSA roots. A separate form on the same page verifies an audit anchor JSON.
 
 **Nothing you submit is stored, logged, or forwarded.** The package is verified in memory and discarded. It is someone's audit trail from a regulated environment; the only defensible retention policy is none.
 
@@ -191,11 +223,11 @@ behavry-verify --package apr.zip --trust-anchor anchor.json \
                --observer-anchor edr-observer.json --observer-anchor cloudtrail-observer.json
 ```
 
-Authority package, with Minotaur's key:
+Authority package, with Minotaur's key (and, for a 1.4 package, your TSA roots for its anchors):
 
 ```bash
 behavry-verify --package authority-agent-123.zip --trust-anchor anchor.json \
-               --observer-anchor minotaur-observer-key.json
+               --observer-anchor minotaur-observer-key.json --tsa-roots your-tsa-roots.pem
 ```
 
 Audit anchor, optionally with your TSA roots. Repeat `--audit-anchor` to also walk a set for missing periods:
@@ -214,10 +246,12 @@ behavry-verify --audit-anchor 2026-09-07T12.json --audit-anchor 2026-09-07T13.js
 curl -X POST https://verify.behavry.ai/api/v1/verify \
   -F package=@apr-APR-2026-001942.zip \
   -F trust_anchor=@behavry-trust-anchor.json \
-  -F observer_anchors=@observer-anchors.json   # optional
+  -F observer_anchor=@minotaur-observer-key.json \  # optional, repeatable file
+  -F observer_anchor=@edr-observer.json \
+  -F tsa_roots=@your-tsa-roots.pem                  # optional, for 1.4 anchors
 ```
 
-The web page does not yet have an observer-anchor input; use the CLI or the API for observations.
+`observer_anchor` is a file field and may repeat, one observer key file each, like `--observer-anchor`. The older `observer_anchors` field (JSON text of one anchor or a list) still works, and both are combined.
 
 A package that fails verification still returns `200` with `"verified": false`: you asked a question and got a definitive answer. `4xx` means the input was malformed, not that the evidence was bad.
 
@@ -255,13 +289,16 @@ These modules must match the Behavry producer byte-for-byte, or valid evidence s
 - `behavry_verify/hashbody.py` ↔ `backend/behavry/audit/service.py` (decision body v1 to v8), `backend/behavry/audit/evidence.py` (authorization and observation bodies), `backend/behavry/core/security.py` and `backend/behavry/audit/signer.py`
 - `behavry_verify/jcs.py` ↔ `backend/behavry/audit/args_digest.py` (RFC 8785, copied exactly, including its error behaviour)
 - `behavry_verify/authority.py` ↔ `backend/behavry/authority/provenance.py` and the assessment bundle form in Behavry's `docs/strategy/AG3-CONTRACTS.md` §1.2
-- `behavry_verify/audit_anchor.py` ↔ `backend/behavry/audit/anchoring.py` and `tools/verify_event.py --anchor` / `--anchor-chain`
+- `behavry_verify/audit_anchor.py` ↔ `backend/behavry/audit/anchoring.py` and `tools/verify_event.py --anchor` / `--anchor-chain`; the v3 form follows Behavry's `docs/strategy/AG4-CONTRACTS.md` §1 and §2
+- check 15 in `behavry_verify/authority.py` ↔ `backend/behavry/authority/package.py` (package 1.4) and AG4-CONTRACTS §3 and §4
 
 `behavry_verify/rfc3161.py` is a small DER reader for RFC 3161 tokens. `cryptography` has no TSP or CMS parser, and adding `asn1crypto` would double what an auditor has to install.
 
 The AG-3 forms are pinned the same way: `tests/vectors/anchor_vectors.json`, `ag3_vectors.json` and `tsa_root.pem` are written by `tests/vectors/generate_anchor_vectors.py` from Behavry's own anchoring, signer, RFC 3161 parser, provenance and RFC 8785 code. The test TSA's tokens are genuine CMS SignedData that `openssl ts -verify` accepts against `tsa_root.pem`.
 
 `hashbody.py` is pinned by golden vectors: `tests/vectors/producer_vectors.json` is written by the Behavry backend's own functions (`tests/vectors/generate_vectors.py`, run from a Behavry checkout), and `tests/test_vectors.py` asserts this repo's port reproduces every byte. The tests never import the backend. When the producer adds a hash version, regenerate the vectors and add the branch here in the same change.
+
+The AG-4 v3 anchors and 1.4 packages are built in-test by `tests/conftest.py` from the contract, signed with test keys and timestamped by `tests/tsa.py`, a test TSA written with `cryptography` alone (the E-8 vectors' TSA key was discarded, so it cannot stamp new digests). Once Behavry's producer ships, add v3 vectors to `generate_anchor_vectors.py` so the byte form is pinned to Behavry's own output as v1 and v2 are.
 
 `tests/conftest.py` builds packages the way the producer builds them (same manifest fields, same two-pass signing order, same JSON dump options, same ZIP layout), so drift on either side shows up as a failing test rather than as evidence that stops verifying in the field.
 

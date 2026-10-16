@@ -91,6 +91,8 @@ _ANCHOR_LABELS: dict[str, str] = {
     "tsa_gen_time": "TSA genTime",
     "tsa_serial_number": "TSA serial",
     "tsa_policy": "TSA policy",
+    "provenance_count": "Provenance entries",
+    "provenance_root": "Provenance root",
 }
 
 
@@ -152,6 +154,12 @@ class VerificationReport:
     # Authority packages (1.3) only: which golden-path elements the provenance
     # chain evidences. Informational, like ``observation_summary``.
     lifecycle: dict[str, bool] | None = None
+
+    # Authority packages 1.4 only (check 15): each anchor in anchors.json and
+    # how each provenance entry classifies (anchored, not yet anchored,
+    # missing, unanchored, anchor_unverified). See
+    # :func:`behavry_verify.authority.check_provenance_anchoring`.
+    provenance_anchoring: dict[str, Any] | None = None
 
     trust_source: TrustSource = TrustSource.NONE
     verified_at: str = ""
@@ -259,6 +267,14 @@ class VerificationReport:
             lines.append(
                 f"  {'Observer verdicts'.ljust(width)}  {verdicts} "
                 "(informational, as claimed by observers)"
+            )
+        if self.provenance_anchoring:
+            pa = self.provenance_anchoring
+            lines.append(
+                f"  {'Provenance anchoring'.ljust(width)}  {pa.get('anchored', 0)} anchored, "
+                f"{pa.get('not_yet_anchored', 0)} not yet anchored, {pa.get('missing', 0)} "
+                f"missing, {pa.get('unanchored', 0)} unanchored "
+                f"(across {pa.get('anchor_count', 0)} anchor(s))"
             )
         lines.append("")
         lines.append(f"  {self.caveat}")
