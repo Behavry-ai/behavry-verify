@@ -8,6 +8,18 @@ verification core means they cannot.
     behavry-verify --package apr-APR-2026-001942.zip \\
                    --trust-anchor behavry-trust-anchor.json
 
+    behavry-verify --package authority-<agent_id>.zip \\
+                   --trust-anchor behavry-trust-anchor.json \\
+                   --observer-anchor minotaur-observer-key.json
+
+    behavry-verify --audit-anchor behavry-anchor.json \\
+                   --trust-anchor behavry-trust-anchor.json \\
+                   [--tsa-roots your-tsa-roots.pem]
+
+``--audit-anchor`` is repeatable: given two or more exports for one tenant, each
+is verified and then the AUD-LINK back-pointers are walked to report a period
+missing from the set.
+
 Exit codes:
     0  verified
     1  not verified
@@ -24,8 +36,10 @@ from pathlib import Path
 
 from behavry_verify import __version__
 from behavry_verify.anchor import AnchorError, validate_anchor, validate_observer_anchors
+from behavry_verify.audit_anchor import verify_anchor_chain, verify_audit_anchor
 from behavry_verify.package import PackageError, load_package_from_path, verify_package
-from behavry_verify.report import TrustSource
+from behavry_verify.report import TrustSource, VerificationReport
+from behavry_verify.rfc3161 import load_pem_certificates
 
 EXIT_VERIFIED = 0
 EXIT_NOT_VERIFIED = 1
@@ -36,15 +50,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="behavry-verify",
         description=(
-            "Independently verify a Behavry APR evidence package offline. "
-            "Requires no Behavry account, database, or network access."
+            "Independently verify a Behavry evidence package (APR or authority) "
+            "or an audit anchor offline. Requires no Behavry account, database, "
+            "or network access."
         ),
     )
-    parser.add_argument(
+    subject = parser.add_mutually_exclusive_group(required=True)
+    subject.add_argument(
         "--package",
         type=Path,
-        required=True,
         help="Evidence package: a .zip archive or an unpacked directory",
+    )
+    subject.add_argument(
+        "--audit-anchor",
+        type=Path,
+        action="append",
+        metavar="PATH",
+        help=(
+            "Audit anchor export JSON (GET /api/v1/audit/anchors/{id}/export): the "
+            "RFC 3161 timestamp proof. Repeatable; with two or more, the anchor "
+            "chain is also walked for a missing period."
+        ),
     )
     key = parser.add_mutually_exclusive_group(required=True)
     key.add_argument(
@@ -67,7 +93,17 @@ def build_parser() -> argparse.ArgumentParser:
             "JSON file with an independent observer's public key "
             '({"kid","public_key_hex","observer_id","observer_type"}, or a list of '
             "them). Repeatable. Observations whose key is not supplied are reported "
-            "as not independently verified."
+            "as not independently verified. Also checks Minotaur assessment "
+            "bundles in an authority package."
+        ),
+    )
+    parser.add_argument(
+        "--tsa-roots",
+        type=Path,
+        metavar="PEM",
+        help=(
+            "PEM bundle of TSA root certificates you trust, for --audit-anchor. "
+            "Without it the TSA certificate chain is reported as not validated."
         ),
     )
     parser.add_argument(
@@ -119,6 +155,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: could not read observer anchor {path}: {exc}", file=sys.stderr)
             return EXIT_USAGE
 
+    if args.audit_anchor:
+        return _run_audit_anchors(args, anchor, raw_public_key, trust_source)
+
     try:
         components = load_package_from_path(args.package)
     except (PackageError, OSError) as exc:
@@ -138,6 +177,74 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(report.to_text())
     return EXIT_VERIFIED if report.verified else EXIT_NOT_VERIFIED
+
+
+def _run_audit_anchors(
+    args: argparse.Namespace,
+    anchor: dict | None,
+    raw_public_key: bytes | None,
+    trust_source: TrustSource,
+) -> int:
+    roots = None
+    if args.tsa_roots is not None:
+        try:
+            roots = load_pem_certificates(args.tsa_roots.read_bytes())
+        except (OSError, ValueError) as exc:
+            print(f"error: could not read TSA roots {args.tsa_roots}: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+
+    exports: list[tuple[Path, dict]] = []
+    for path in args.audit_anchor:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"error: could not read audit anchor {path}: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        if not isinstance(value, dict):
+            print(f"error: audit anchor {path} is not a JSON object", file=sys.stderr)
+            return EXIT_USAGE
+        exports.append((path, value))
+
+    reports: list[tuple[Path, VerificationReport]] = [
+        (
+            path,
+            verify_audit_anchor(
+                export,
+                anchor=anchor,
+                raw_public_key=raw_public_key,
+                trust_source=trust_source,
+                tsa_roots=roots,
+            ),
+        )
+        for path, export in exports
+    ]
+    chain: tuple[bool, list[str]] | None = None
+    if len(exports) > 1:
+        chain = verify_anchor_chain([export for _, export in exports])
+    all_ok = all(r.verified for _, r in reports) and (chain is None or chain[0])
+
+    if args.json:
+        if chain is None:
+            print(json.dumps(reports[0][1].to_dict(), indent=2))
+        else:
+            body = {
+                "verified": all_ok,
+                "anchors": [{"path": str(p), "report": r.to_dict()} for p, r in reports],
+                "chain": {"verified": chain[0], "findings": chain[1]},
+            }
+            print(json.dumps(body, indent=2))
+    elif chain is None:
+        print(reports[0][1].to_text())
+    else:
+        for path, report in reports:
+            print(f"== {path} ==")
+            print(report.to_text())
+            print()
+        print("== Anchor chain ==")
+        print("VERIFIED" if chain[0] else "NOT VERIFIED")
+        for line in chain[1]:
+            print(f"  {line}")
+    return EXIT_VERIFIED if all_ok else EXIT_NOT_VERIFIED
 
 
 if __name__ == "__main__":

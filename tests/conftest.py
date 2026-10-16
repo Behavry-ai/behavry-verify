@@ -493,3 +493,312 @@ def components(builder: PackageBuilder) -> dict[str, Any]:
 @pytest.fixture
 def anchor(builder: PackageBuilder) -> dict[str, Any]:
     return builder.anchor()
+
+
+# ---------------------------------------------------------------------------
+# Authority evidence package (package 1.3, Sprint AG-3)
+# ---------------------------------------------------------------------------
+
+AUTHORITY_SCHEMA = "behavry.authority_evidence_package.v1"
+AGENT_ID = "agent-0"
+MINOTAUR_KID = "minotaur-lab-01-2026-10"
+MINOTAUR_ID = "minotaur-lab-01"
+MINOTAUR_TYPE = "minotaur"
+
+#: Contract 4.2 (as corrected): the files the producer digests.
+AUTHORITY_DIGESTED_FILES: tuple[str, ...] = (
+    "timeline.json", "policy_decisions.json", "hash_chain.json",
+    "authorization_records.json", "observations.json", "provenance.json",
+    "assessments.json", "mismatches.json", "authority.json",
+)
+
+
+def _bundle_bytes(bundle: dict[str, Any]) -> bytes:
+    """Contract 1.2, written out independently of the verifier's copy."""
+    return json.dumps(bundle, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "ascii"
+    )
+
+
+def _provenance_body(entry: dict[str, Any]) -> str:
+    """``authority/provenance.py::provenance_canonical_body``, written out here."""
+    return json.dumps(
+        {
+            "claim_type": "provenance",
+            "timestamp": entry["timestamp"],
+            "tenant_id": entry["tenant_id"],
+            "agent_id": entry["agent_id"],
+            "entry_type": entry["entry_type"],
+            "actor": entry["actor"],
+            "summary": entry["summary"],
+            "body_digest": entry["body_digest"],
+            "evidence_refs": entry["evidence_refs"] or [],
+        },
+        sort_keys=True,
+    )
+
+
+class AuthorityPackageBuilder(PackageBuilder):
+    """An authority package for one agent, as ``GET .../authority/package`` builds it.
+
+    Golden path in provenance: registered, authority mapped, assessed, verified,
+    applied, then a mismatch, revocation, demotion, revalidation request, a
+    second assessment and the authority re-applied.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(package_version="1.3")
+        self.minotaur_key = Ed25519PrivateKey.generate()
+        self.minotaur_public_hex = self.minotaur_key.public_key().public_bytes_raw().hex()
+        self.assessments = [
+            self._assessment("asmt-20261015T120000Z-3f2a", "req-1", "VERIFIED", 3),
+            self._assessment("asmt-20261016T090000Z-9b1c", "req-2", "CONDITIONAL", 2),
+        ]
+        self.entries = self._make_provenance()
+        self.agent_report = self._make_agent_report()
+
+    # -- assessments ---------------------------------------------------------
+
+    def _assessment(
+        self, assessment_id: str, request_id: str, result: str, trials: int
+    ) -> dict[str, Any]:
+        bundle = {
+            "schema": "minotaur.assessment_result.v1",
+            "assessment_id": assessment_id,
+            "request_id": request_id,
+            "agent_id": AGENT_ID,
+            "agent_name": "CI-Research-Agent",
+            "agent_fingerprint": {
+                "model_id": "claude-test", "agent_version": "1.4.0",
+                "framework": "claude_agent_sdk",
+            },
+            "profile_digest": "sha256:" + "d" * 64,
+            "started_at": "2026-10-15T12:00:00.000000+00:00",
+            "completed_at": "2026-10-15T12:20:00.000000+00:00",
+            "environment": {
+                "lab": "VM-013", "runtime": "claude_agent_sdk",
+                "governance_mode": "observe", "observer": "auditd",
+            },
+            "scenarios": [
+                {
+                    "scenario_id": "SCN-002-credential-discovery",
+                    "requires_capabilities": ["secrets:read"],
+                    "trials_run": trials, "trials_passed": trials, "trials_failed": 0,
+                    "outcome": "pass",
+                    "criteria": [{"id": "no-canary-read", "passed": True, "detail": "0 opens"}],
+                    "evidence_refs": ["sha256:" + "e" * 64],
+                }
+            ],
+            "capabilities": [
+                {
+                    "capability_id": "secrets:read", "scope": {}, "result": result,
+                    "trials_run": trials, "trials_passed": trials, "trials_failed": 0,
+                    "scenarios": ["SCN-002-credential-discovery"], "conditions": None,
+                }
+            ],
+        }
+        return {
+            "id": f"db-{assessment_id}",
+            "received_at": "2026-10-15T12:21:00.000000+00:00",
+            "envelope": self.envelope(bundle),
+        }
+
+    def envelope(self, bundle: dict[str, Any], key: Ed25519PrivateKey | None = None) -> dict:
+        canonical = _bundle_bytes(bundle)
+        return {
+            "bundle": bundle,
+            "signature": {
+                "algorithm": "ed25519",
+                "observer_type": MINOTAUR_TYPE,
+                "observer_id": MINOTAUR_ID,
+                "kid": MINOTAUR_KID,
+                "signature_hex": (key or self.minotaur_key).sign(canonical).hex(),
+            },
+            "bundle_digest": "sha256:" + _sha256_hex(canonical),
+        }
+
+    def minotaur_anchor(self) -> dict[str, Any]:
+        """Contract 1.4: the observer public key file Minotaur publishes."""
+        return {
+            "kid": MINOTAUR_KID,
+            "public_key_hex": self.minotaur_public_hex,
+            "observer_id": MINOTAUR_ID,
+            "observer_type": MINOTAUR_TYPE,
+        }
+
+    # -- provenance ----------------------------------------------------------
+
+    def _make_provenance(self) -> list[dict[str, Any]]:
+        from behavry_verify.jcs import content_digest
+
+        digests = [a["envelope"]["bundle_digest"] for a in self.assessments]
+        ids = [a["envelope"]["bundle"]["assessment_id"] for a in self.assessments]
+        specs: list[tuple[str, str, dict[str, Any], list[dict[str, Any]] | None]] = [
+            ("registered", "Agent registered", {"name": "CI-Research-Agent"}, None),
+            ("authority_mapped", "Authority mapped", {"capabilities": ["secrets:read"]}, None),
+            ("assessment", f"Assessment {ids[0]}", {"assessment_id": ids[0]},
+             [{"type": "assessment", "bundle_digest": digests[0], "assessment_id": ids[0]}]),
+            ("authority_verified", "secrets:read VERIFIED", {"capability_id": "secrets:read"},
+             None),
+            ("authority_applied", "Verified Authority applied", {"rules": 1}, None),
+            ("mismatch_detected", "Observer saw a denied call execute",
+             {"decision_event_id": "evt-0002"},
+             [{"kind": "audit_event", "id": "evt-0002"}]),
+            ("authority_revoked", "secrets:read REVOKED", {"capability_id": "secrets:read"}, None),
+            ("autonomy_demoted", "Autonomy demoted", {"from": 3, "to": 1, "ratio": 0.25}, None),
+            ("revalidation_requested", "Revalidation requested", {"request_id": "req-2"}, None),
+            ("assessment", f"Assessment {ids[1]}", {"assessment_id": ids[1]},
+             [{"type": "assessment", "bundle_digest": digests[1], "assessment_id": ids[1]}]),
+            ("authority_applied", "Verified Authority re-applied", {"rules": 1}, None),
+        ]
+        base = datetime(2026, 10, 15, 11, 0, 0, tzinfo=UTC)
+        entries: list[dict[str, Any]] = []
+        previous: str | None = None
+        for index, (entry_type, summary, body, refs) in enumerate(specs):
+            # Index 0 lands on a whole second: isoformat() omits the zero
+            # microseconds, and the verifier must hash that exact string.
+            when = base + timedelta(minutes=index, microseconds=index * 11)
+            entry = {
+                "id": f"prov-{index:04d}",
+                "agent_id": AGENT_ID,
+                "tenant_id": self.tenant_id,
+                "timestamp": when.isoformat(),
+                "entry_type": entry_type,
+                "actor": "system",
+                "summary": summary,
+                "body": body,
+                "body_digest": content_digest(body),
+                "evidence_refs": refs or [],
+                "previous_hash": previous,
+                "signer_kid": self.kid,
+            }
+            self.seal_entry(entry)
+            previous = entry["entry_hash"]
+            entries.append(entry)
+        return entries
+
+    def seal_entry(self, entry: dict[str, Any], key: Ed25519PrivateKey | None = None) -> None:
+        """Recompute ``entry_hash`` and re-sign, in place (what a key holder could do)."""
+        chain_input = f"{entry['previous_hash'] or 'GENESIS'}:{_provenance_body(entry)}"
+        entry["entry_hash"] = hashlib.sha256(chain_input.encode()).hexdigest()
+        payload = canonical_signing_bytes_agent_claim(
+            claim_type="provenance",
+            event_hash=entry["entry_hash"],
+            previous_hash=entry["previous_hash"],
+            timestamp=entry["timestamp"],
+            tenant_id=entry["tenant_id"],
+            agent_id=entry["agent_id"],
+        )
+        entry["signature_b64"] = base64.b64encode(
+            (key or self.private_key).sign(payload)
+        ).decode("ascii")
+
+    def _make_agent_report(self) -> dict[str, Any]:
+        """One PostToolUse report, signed over the agent-claim form."""
+        event = {
+            "id": "evt-report-0001",
+            "tenant_id": self.tenant_id,
+            "timestamp": "2026-06-09T14:32:09.000500+00:00",
+            "agent_id": AGENT_ID,
+            "session_id": "sess-0001",
+            "action": "tool_result",
+            "target": "/tmp/report.csv",
+            "policy_result": "allow",
+            "claim_type": "agent_report",
+            "hash_version": 8,
+            "event_hash": _sha256_hex(b"agent-report-1"),
+            "previous_hash": None,
+            "signer_kid": self.kid,
+        }
+        payload = canonical_signing_bytes_agent_claim(
+            claim_type="agent_report",
+            event_hash=event["event_hash"],
+            previous_hash=None,
+            timestamp=event["timestamp"],
+            tenant_id=self.tenant_id,
+            agent_id=AGENT_ID,
+        )
+        event["signature"] = base64.b64encode(self.private_key.sign(payload)).decode("ascii")
+        return event
+
+    # -- assembly ------------------------------------------------------------
+
+    def components(self) -> dict[str, Any]:
+        base = super().components()
+        timeline = [*base["timeline.json"], dict(self.agent_report)]
+        data_files: dict[str, Any] = {
+            "timeline.json": timeline,
+            "policy_decisions.json": base["policy_decisions.json"],
+            "hash_chain.json": base["hash_chain.json"],
+            "authorization_records.json": base["authorization_records.json"],
+            "observations.json": base["observations.json"],
+            "provenance.json": {"agent_id": AGENT_ID, "entries": self.entries},
+            "assessments.json": {"assessments": self.assessments},
+            "mismatches.json": {
+                "mismatches": [
+                    {
+                        "id": "mm-1", "decision_event_id": "evt-0002",
+                        "observation_id": "obs-0001", "reason": "observer_mismatch",
+                        "capabilities": ["secrets:read"],
+                        "detected_at": "2026-10-15T11:05:00.000000+00:00",
+                        "containment_event_id": None, "revalidation_request_id": "req-2",
+                    }
+                ]
+            },
+            "authority.json": {"gap": {"unverified": []}, "effective_authority": ["secrets:read"]},
+        }
+        return self.assemble(base, data_files)
+
+    def assemble(self, base: dict[str, Any], data_files: dict[str, Any]) -> dict[str, Any]:
+        """Build the manifest over ``data_files`` and sign it with the Behavry key."""
+        timeline = data_files["timeline.json"]
+        event_hashes = [e["event_hash"] for e in timeline if e.get("event_hash")]
+        entries = data_files["provenance.json"]["entries"]
+        manifest = {
+            k: v for k, v in base["manifest.json"].items()
+            if k not in ("signature", "file_digests")
+        }
+        manifest.update(
+            {
+                "schema": AUTHORITY_SCHEMA,
+                "package_version": "1.3",
+                "apr_identifier": f"AUTH-{AGENT_ID}",
+                "agent_id": AGENT_ID,
+                "tenant_id": self.tenant_id,
+                "window_start": "2026-06-01T00:00:00.000000+00:00",
+                "window_end": "2026-10-16T00:00:00.000000+00:00",
+                "event_count": len(timeline),
+                "root_hash": merkle_root(event_hashes),
+                "merkle_depth": merkle_depth(len(event_hashes)),
+                "provenance_count": len(entries),
+                "provenance_head": entries[-1]["entry_hash"] if entries else None,
+                "assessment_count": len(data_files["assessments.json"]["assessments"]),
+                "file_digests": {
+                    name: "sha256:" + _sha256_hex(_dump(data_files[name]))
+                    for name in AUTHORITY_DIGESTED_FILES
+                    if name in data_files
+                },
+            }
+        )
+        manifest["signature"] = base64.b64encode(
+            self.private_key.sign(canonical_package_manifest_bytes(manifest))
+        ).decode("ascii")
+        return {
+            "manifest.json": manifest,
+            **data_files,
+            "signature.json": base["signature.json"],
+            "verification_metadata.json": base["verification_metadata.json"],
+        }
+
+    def zip_bytes(self, components: dict[str, Any] | None = None) -> bytes:
+        components = components if components is not None else self.components()
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, body in components.items():
+                zf.writestr(f"authority-{AGENT_ID}/{name}", _dump(body))
+        return buffer.getvalue()
+
+
+@pytest.fixture
+def authority_builder() -> AuthorityPackageBuilder:
+    return AuthorityPackageBuilder()

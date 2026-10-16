@@ -70,3 +70,17 @@ def test_registry_verification_is_reported_as_the_weaker_claim(tmp_path, builder
     assert report.verified
     assert "came from Behavry" in report.caveat
     assert "obtain the trust anchor from the tenant" in report.caveat
+
+
+def test_committed_anchors_are_valid_and_public():
+    """Every published anchor parses, holds only Ed25519 public keys, and no kid twice."""
+    from behavry_verify.anchor import validate_anchor
+    from behavry_verify.registry import ANCHOR_DIR
+
+    seen: set[str] = set()
+    for path in sorted(ANCHOR_DIR.glob("*.json")):
+        text = path.read_text(encoding="utf-8")
+        assert "private" not in text.lower(), f"{path.name} mentions private key material"
+        for entry in validate_anchor(json.loads(text)):
+            assert entry["kid"] not in seen, f"{path.name} repeats kid {entry['kid']}"
+            seen.add(entry["kid"])
