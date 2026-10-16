@@ -159,7 +159,9 @@ class VerificationReport:
     # Authority packages 1.4 only (check 15): each anchor in anchors.json and
     # how each provenance entry classifies (anchored, not yet anchored,
     # missing, unanchored, anchor_unverified). See
-    # :func:`behavry_verify.authority.check_provenance_anchoring`.
+    # :func:`behavry_verify.authority.check_provenance_anchoring`. Package 1.6,
+    # or any package given an anchor head, adds ``heads`` and ``head_note``;
+    # 1.6 adds ``predecessor``.
     provenance_anchoring: dict[str, Any] | None = None
 
     trust_source: TrustSource = TrustSource.NONE
@@ -282,6 +284,27 @@ class VerificationReport:
                     f"  {'Anchor chain'.ljust(width)}  "
                     + ("unbroken" if pa["chain_unbroken"] else "BROKEN: an anchor is missing")
                 )
+            if "predecessor" in pa:
+                pred = pa["predecessor"]
+                if pred is None:
+                    line = "none (the run starts the anchor chain)"
+                else:
+                    line = f"{pred.get('anchor_id')} ({pred.get('schema')}), " + (
+                        "verified" if pred.get("verified") else "NOT VERIFIED"
+                    )
+                lines.append(f"  {'Run predecessor'.ljust(width)}  {line}")
+            for head in pa.get("heads") or []:
+                state = (
+                    "verified"
+                    if head.get("verified")
+                    else "NOT VERIFIED, not used: " + ", ".join(head.get("failed_checks") or [])
+                )
+                lines.append(
+                    f"  {'Anchor head'.ljust(width)}  {head.get('anchor_id')} "
+                    f"({head.get('period_start')}..{head.get('period_end')}), {state}"
+                )
+            if pa.get("head_note"):
+                lines.append(f"  {'Anchor head'.ljust(width)}  {pa['head_note']}")
         lines.append("")
         lines.append(f"  {self.caveat}")
         if self.error:

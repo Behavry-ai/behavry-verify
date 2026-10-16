@@ -75,6 +75,17 @@
       <input type="file" id="tsa-roots" name="tsa-roots" accept=".pem,.crt,.cer,application/x-pem-file">
     </div>
 
+    <div class="field">
+      <label for="anchor-heads">Anchor heads <span class="opt">recommended for authority packages</span></label>
+      <p class="hint">
+        The tenant's newest anchor, obtained from Behavry independently of the package
+        (<code>/api/v1/audit/anchors/head</code>). Choose one or more. Every provenance
+        entry older than a head must be anchored in the package, which rules out dropping
+        the newest anchors. Without one, that truncation cannot be ruled out.
+      </p>
+      <input type="file" id="anchor-heads" name="anchor-heads" accept=".json,application/json" multiple>
+    </div>
+
     <button type="submit" id="submit">Verify package</button>
     <p id="status" class="status" role="status" aria-live="polite"></p>
   </form>
@@ -150,7 +161,8 @@ behavry-verify --package apr-APR-2026-001942.zip \
 behavry-verify --package authority-&lt;agent_id&gt;.zip \
                --trust-anchor behavry-trust-anchor.json \
                --observer-anchor minotaur-observer-key.json \
-               --tsa-roots your-tsa-roots.pem
+               --tsa-roots your-tsa-roots.pem \
+               --anchor-head anchor-head.json
 
 behavry-verify --audit-anchor behavry-anchor.json \
                --trust-anchor behavry-trust-anchor.json</code></pre>

@@ -11,7 +11,8 @@ verification core means they cannot.
     behavry-verify --package authority-<agent_id>.zip \\
                    --trust-anchor behavry-trust-anchor.json \\
                    --observer-anchor minotaur-observer-key.json \\
-                   [--tsa-roots your-tsa-roots.pem]
+                   [--tsa-roots your-tsa-roots.pem] \\
+                   [--anchor-head anchor-head.json]
 
     behavry-verify --audit-anchor behavry-anchor.json \\
                    --trust-anchor behavry-trust-anchor.json \\
@@ -20,6 +21,11 @@ verification core means they cannot.
 ``--audit-anchor`` is repeatable: given two or more exports for one tenant, each
 is verified and then the AUD-LINK back-pointers are walked to report a period
 missing from the set.
+
+``--anchor-head`` is repeatable too: each is an anchor record obtained from the
+tenant independently of the package (``GET /api/v1/audit/anchors/head``), and
+every provenance entry older than a verified head's period must be anchored in
+the package. Without one, dropping the newest anchors cannot be ruled out.
 
 Exit codes:
     0  verified
@@ -109,6 +115,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--anchor-head",
+        type=Path,
+        action="append",
+        default=[],
+        metavar="FILE",
+        help=(
+            "An anchor record obtained independently of the package, such as the "
+            "tenant's head (GET /api/v1/audit/anchors/head). Repeatable, --package "
+            "only. Every provenance entry older than a verified head's period must "
+            "be anchored in the package, which rules out dropping the newest anchors."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit the machine-readable report instead of the text report",
@@ -165,7 +184,26 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: could not read TSA roots {args.tsa_roots}: {exc}", file=sys.stderr)
             return EXIT_USAGE
 
+    heads: list[dict] = []
+    for path in args.anchor_head:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"error: could not read anchor head {path}: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        if not isinstance(value, dict):
+            print(f"error: anchor head {path} is not a JSON object", file=sys.stderr)
+            return EXIT_USAGE
+        heads.append(value)
+
     if args.audit_anchor:
+        if heads:
+            print(
+                "error: --anchor-head applies to --package; to verify a head on its own, "
+                "pass it as --audit-anchor",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
         return _run_audit_anchors(args, anchor, raw_public_key, trust_source, roots)
 
     try:
@@ -181,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         trust_source=trust_source,
         observer_anchors=observer_anchors,
         tsa_roots=roots,
+        anchor_heads=heads,
     )
 
     if args.json:

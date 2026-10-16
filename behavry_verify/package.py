@@ -350,8 +350,16 @@ def verify_package(
     trust_source: TrustSource = TrustSource.NONE,
     observer_anchors: list[dict[str, Any]] | None = None,
     tsa_roots: list[Any] | None = None,
+    anchor_heads: list[dict[str, Any]] | None = None,
 ) -> VerificationReport:
     """Verify an assembled evidence package and return a full report.
+
+    ``anchor_heads`` are anchor records (header-only or full) the verifying
+    party obtained independently of the package, for example from
+    ``GET /api/v1/audit/anchors/head``. Check 15 requires every provenance
+    entry older than a verified head's period end to be anchored, which is
+    what rules out a run truncated at its newest anchors (AG6-CONTRACTS
+    section 4).
 
     ``tsa_roots`` are TSA root certificates the verifying party trusts, used by
     check 15 for the RFC 3161 tokens on the audit anchors a 1.4 package carries.
@@ -546,7 +554,8 @@ def verify_package(
         check_lifecycle(report, components)
         # -- 15. Provenance anchored (1.4) ------------------------------------
         check_provenance_anchoring(
-            report, components, manifest, anchor, raw_public_key, tsa_roots
+            report, components, manifest, anchor, raw_public_key, tsa_roots,
+            heads=anchor_heads,
         )
 
     return report.finalize()
