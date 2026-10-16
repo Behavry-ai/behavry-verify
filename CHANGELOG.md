@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.4.0
+
+Sprint AG-4 (G-1 verifier and G-7), following Behavry's
+`docs/strategy/AG4-CONTRACTS.md`.
+
+### Added
+
+- **Anchor schema v3.** `behavry.audit_anchor.v3` canonical bytes: the v2
+  payload plus `provenance_count`, `provenance_root`, `first_provenance_hash`
+  and `last_provenance_hash` (null hashes as `""`, a null root as the empty
+  root). For v3 anchors `--audit-anchor` and `POST /api/v1/verify-anchor` also
+  recompute the provenance root, count and first/last hashes from the export's
+  hash-only `provenance` records, check each record's Behavry signature
+  (agent-claim form, claim type `provenance`), and report the provenance
+  figures. v1 and v2 bytes are unchanged.
+- **Check 15, `provenance_anchoring`, for authority packages 1.4.** Each anchor
+  in `anchors.json` is verified as `--audit-anchor` would, under the package's
+  trust anchor, and must be for the package's tenant; `anchor_count` must
+  match the signed manifest. Each provenance entry is classified `anchored`
+  (with that anchor's TSA genTime, or "no TSA"), `not_yet_anchored` (reported,
+  never a failure), `missing` (inside a sealed v3 period but not in its anchor:
+  fails), `unanchored` (no anchor, or only a pre-v3 one, covers it; a warning
+  when inside the sealed span) or `anchor_unverified`. Packages before 1.4
+  skip with the reason. The JSON report gains `provenance_anchoring`.
+- `--tsa-roots` now also applies to `--package`, for check 15's anchors, and
+  `verify_package` takes `tsa_roots`.
+- **API:** `POST /api/v1/verify` and `/api/v1/verify.txt` accept
+  `observer_anchor` as a repeatable file field (one observer key file each)
+  alongside the existing `observer_anchors` JSON text, and a `tsa_roots` PEM
+  text field.
+- **Web (G-7):** the verify page takes one or more observer key files (such as
+  Minotaur's) and a TSA roots file with the package, and has a separate form
+  that verifies an audit anchor JSON. The result shows the anchor period,
+  provenance figures and provenance anchoring counts. Still no JS
+  dependencies.
+- `tests/tsa.py`: a test RFC 3161 TSA written with `cryptography` alone, so
+  in-test anchors can be timestamped without adding `asn1crypto`.
+
+### Fixed
+
+- The anchor chain walk treated any schema other than v2 as pre-AUD-LINK. v3
+  anchors keep the back-pointer and are now walked as chained.
+
 ## 0.3.0
 
 Sprint AG-3 (Behavry E-8 and authority evidence package 1.3), plus the AG-1
