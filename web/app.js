@@ -203,6 +203,11 @@
           (anchoring.unanchored ? ", " + anchoring.unanchored + " unanchored" : "") +
           " (" + anchoring.anchor_count + " anchor" + (anchoring.anchor_count === 1 ? "" : "s") + ")"
         : null],
+      ["Records carried", anchorSummary.records === "provenance"
+        ? "provenance only (event checks skipped)" : null],
+      ["Anchor chain", anchoring && anchoring.chain_unbroken !== undefined
+        ? (anchoring.chain_unbroken ? "unbroken" : "BROKEN: an anchor is missing")
+        : null],
       ["Verified at", report.verified_at],
     ].forEach(function (pair) {
       if (pair[1] === null || pair[1] === undefined || pair[1] === "") return;
@@ -223,6 +228,15 @@
   function summarize(report) {
     var checks = report.checks || [];
     var failed = checks.filter(function (c) { return c.status === "fail"; });
+    if (report.verified && report.kind === "audit_anchor" &&
+        (report.anchor_summary || {}).records === "provenance") {
+      return (
+        "Every check that applies passed. This anchor is exactly what was sealed, and its " +
+        ((report.anchor_summary || {}).provenance_count || 0) +
+        " provenance entries reproduce its provenance root. It is a provenance-only " +
+        "record, so its events are not carried and the event checks were skipped."
+      );
+    }
     if (report.verified && report.kind === "audit_anchor") {
       return (
         "Every check passed. This anchor is exactly what was sealed, and its " +

@@ -57,6 +57,8 @@ __all__ = [
     "ANCHOR_SCHEMA_V1",
     "ANCHOR_SCHEMA_V2",
     "ANCHOR_SCHEMA_V3",
+    "EVENT_CHECKS_SKIPPED_REASON",
+    "RECORDS_PROVENANCE",
     "anchor_provenance_hashes",
     "canonical_anchor_bytes",
     "verify_audit_anchor",
@@ -73,6 +75,15 @@ ANCHOR_SCHEMA_V2 = "behavry.audit_anchor.v2"
 # AG-4 G-1: adds the period's agent provenance (root, count, first/last hash).
 ANCHOR_SCHEMA_V3 = "behavry.audit_anchor.v3"
 ANCHOR_SCHEMA = ANCHOR_SCHEMA_V3
+
+#: AG-5 H-1: an export carrying ``records: "provenance"`` holds the period's
+#: provenance records and no events (AG5-CONTRACTS section 1).
+RECORDS_PROVENANCE = "provenance"
+#: The reason AG5-CONTRACTS section 2 item 4 gives, verbatim.
+EVENT_CHECKS_SKIPPED_REASON = (
+    "event records are not carried; the package's own events are covered by its "
+    "Merkle root and signatures"
+)
 
 _KNOWN_SCHEMAS = frozenset({ANCHOR_SCHEMA_V1, ANCHOR_SCHEMA_V2, ANCHOR_SCHEMA_V3})
 #: Schemas carrying the AUD-LINK back-pointer. v3 keeps it.
@@ -193,13 +204,45 @@ def verify_audit_anchor(
     events = (
         [e for e in events_raw if isinstance(e, dict)] if isinstance(events_raw, list) else None
     )
+    records_kind = export.get("records")
+    provenance_only = records_kind == RECORDS_PROVENANCE
+    if records_kind is not None:
+        summary["records"] = records_kind
+    if provenance_only and schema != ANCHOR_SCHEMA_V3:
+        report.add_fail(
+            "anchor_format",
+            "Anchor readable",
+            f'records "provenance" is defined for {ANCHOR_SCHEMA_V3} only; a {schema} '
+            "anchor commits to no provenance, so this record carries nothing to check "
+            "it against",
+        )
+        provenance_only = False
+    elif records_kind is not None and not provenance_only:
+        report.add_warn(
+            "anchor_format",
+            "Anchor readable",
+            f"records {records_kind!r} is not a kind this verifier knows; the anchor is "
+            "checked as a full record, with its events",
+        )
 
     # -- 1. Merkle root, event count and boundary hashes ----------------------
     #
     # Only hash-bearing events are leaves (the producer filters the same way:
     # a row predating FE2-01 has no hash). event_count covers ALL records, so
     # it is compared with the records, never with the leaf count.
-    if events is None:
+    #
+    # A provenance-only record (AG5-CONTRACTS section 1, ``records:
+    # "provenance"``) carries no events, so these are SKIPPED, never passed.
+    # The event fields still count: they are inside the signed bytes, so the
+    # digest and signature below still cover them.
+    if provenance_only:
+        for check_id, check_label in (
+            ("merkle_root", "Merkle root matches"),
+            ("event_count", "Event count verified"),
+            ("boundary_hashes", "First and last event hashes match"),
+        ):
+            report.add_skip(check_id, check_label, EVENT_CHECKS_SKIPPED_REASON)
+    elif events is None:
         report.add_fail(
             "merkle_root",
             "Merkle root matches",
@@ -306,7 +349,11 @@ def verify_audit_anchor(
     # The anchor record omits tenant_id per event (it is a property of the
     # anchor), but the signed tuple includes it, so it is supplied here.
     signed = [e for e in (events or []) if e.get("signature")]
-    if not signed:
+    if provenance_only:
+        report.add_skip(
+            "event_signatures", "Event signatures valid", EVENT_CHECKS_SKIPPED_REASON
+        )
+    elif not signed:
         report.add_skip(
             "event_signatures", "Event signatures valid", "no anchored event carries a signature"
         )
