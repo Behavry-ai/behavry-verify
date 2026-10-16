@@ -37,7 +37,7 @@
   <form id="form" class="card">
     <div class="field">
       <label for="package">Evidence package</label>
-      <p class="hint">The <code>.zip</code> exported from a Behavry APR.</p>
+      <p class="hint">The <code>.zip</code> exported from a Behavry APR, or an agent's authority package.</p>
       <div id="drop" class="drop">
         <input type="file" id="package" name="package" accept=".zip,application/zip" required>
         <p id="drop-label">Drop the <code>.zip</code> here, or choose a file</p>
@@ -54,8 +54,57 @@
       <input type="file" id="anchor" name="anchor" accept=".json,application/json">
     </div>
 
+    <div class="field">
+      <label for="observers">Observer keys <span class="opt">optional</span></label>
+      <p class="hint">
+        Public key files of independent observers, such as the Minotaur key
+        (<code>{"kid", "public_key_hex", "observer_id", "observer_type"}</code>). Choose
+        one or more. Observations and assessment bundles signed by a key you do not
+        supply are reported as not independently verified.
+      </p>
+      <input type="file" id="observers" name="observers" accept=".json,application/json" multiple>
+    </div>
+
+    <div class="field">
+      <label for="tsa-roots">TSA roots <span class="opt">optional</span></label>
+      <p class="hint">
+        A PEM bundle of the timestamp authorities you trust, for the audit anchors an
+        authority package carries. Without it the TSA certificate chain is reported as
+        not validated.
+      </p>
+      <input type="file" id="tsa-roots" name="tsa-roots" accept=".pem,.crt,.cer,application/x-pem-file">
+    </div>
+
     <button type="submit" id="submit">Verify package</button>
     <p id="status" class="status" role="status" aria-live="polite"></p>
+  </form>
+
+  <form id="anchor-form" class="card">
+    <h2>Verify an audit anchor</h2>
+    <p class="hint">
+      An audit anchor is the RFC 3161 proof of <em>when</em>: a third-party timestamp over
+      a digest that commits to a tenant's audit events and agent provenance for one period.
+    </p>
+    <div class="field">
+      <label for="audit-anchor">Audit anchor</label>
+      <p class="hint">The JSON exported from <code>/api/v1/audit/anchors/{id}/export</code>.</p>
+      <input type="file" id="audit-anchor" name="audit-anchor" accept=".json,application/json" required>
+    </div>
+
+    <div class="field">
+      <label for="anchor-trust">Trust anchor <span class="opt">recommended</span></label>
+      <p class="hint">The issuing tenant's <code>behavry-trust-anchor.json</code>.</p>
+      <input type="file" id="anchor-trust" name="anchor-trust" accept=".json,application/json">
+    </div>
+
+    <div class="field">
+      <label for="anchor-tsa-roots">TSA roots <span class="opt">optional</span></label>
+      <p class="hint">A PEM bundle of the timestamp authorities you trust.</p>
+      <input type="file" id="anchor-tsa-roots" name="anchor-tsa-roots" accept=".pem,.crt,.cer,application/x-pem-file">
+    </div>
+
+    <button type="submit" id="anchor-submit">Verify anchor</button>
+    <p id="anchor-status" class="status" role="status" aria-live="polite"></p>
   </form>
 
   <section id="result" class="result" hidden></section>
@@ -96,6 +145,14 @@
     <pre><code>pipx install behavry-verify
 
 behavry-verify --package apr-APR-2026-001942.zip \
+               --trust-anchor behavry-trust-anchor.json
+
+behavry-verify --package authority-&lt;agent_id&gt;.zip \
+               --trust-anchor behavry-trust-anchor.json \
+               --observer-anchor minotaur-observer-key.json \
+               --tsa-roots your-tsa-roots.pem
+
+behavry-verify --audit-anchor behavry-anchor.json \
                --trust-anchor behavry-trust-anchor.json</code></pre>
     <p>
       Exit codes are <code>0</code> verified, <code>1</code> not verified,
