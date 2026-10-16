@@ -19,6 +19,14 @@ It is built with the same helpers as the APR package, so checks 1 to 11 in
     ``assessment`` provenance entry must reference a bundle present here.
 14. **Lifecycle** (informational): which golden-path elements the provenance
     chain evidences.
+15. **Provenance anchored** (package 1.4, Sprint AG-4 G-1, ``anchors.json``).
+    Each audit anchor is verified as ``--audit-anchor`` would (canonical bytes
+    and ``anchor_digest``, Behavry signature, RFC 3161 imprint and TSA
+    signature, and the ``provenance_root`` recomputed from its records). Each
+    provenance entry is then anchored, not yet anchored (newer than the last
+    sealed period: reported, never a failure) or missing (inside a sealed
+    period but not in its anchor: a failure, because it was added or altered
+    after sealing). See ``docs/strategy/AG4-CONTRACTS.md`` section 4.
 
 Counterparts (repo ``Behavry-ai/behavry``):
 
@@ -49,6 +57,7 @@ __all__ = [
     "check_assessments",
     "check_lifecycle",
     "check_provenance",
+    "check_provenance_anchoring",
     "is_authority_package",
     "provenance_canonical_body",
     "provenance_entry_hash",
@@ -453,3 +462,246 @@ def check_lifecycle(report: VerificationReport, components: dict[str, Any]) -> N
     if missing:
         detail += f"; not evidenced: {', '.join(missing)}"
     report.add_info("lifecycle", "Authority lifecycle (informational)", detail)
+
+
+# ---------------------------------------------------------------------------
+# 15. Provenance anchored (package 1.4)
+# ---------------------------------------------------------------------------
+
+#: The first package version that carries ``anchors.json``.
+ANCHORING_MIN_VERSION = (1, 4)
+
+_ANCHOR_V3 = "behavry.audit_anchor.v3"
+
+
+def check_provenance_anchoring(
+    report: VerificationReport,
+    components: dict[str, Any],
+    manifest: dict[str, Any],
+    anchor: dict[str, Any] | None,
+    raw_public_key: bytes | None,
+    tsa_roots: list[Any] | None,
+) -> None:
+    """Check 15: every anchor in ``anchors.json``, then classify each entry.
+
+    The result is written to ``report.provenance_anchoring`` as well as to the
+    check: counts per class, one row per anchor, and one per provenance entry.
+    """
+    # Imported here: audit_anchor imports package, which imports this module.
+    from behavry_verify.audit_anchor import (
+        _parse_time,
+        anchor_provenance_hashes,
+        verify_audit_anchor,
+    )
+    from behavry_verify.package import _package_version_tuple
+    from behavry_verify.report import CheckStatus
+
+    check_id = "provenance_anchoring"
+    label = "Provenance anchored"
+    if _package_version_tuple(manifest) < ANCHORING_MIN_VERSION:
+        report.add_skip(
+            check_id,
+            label,
+            f"package_version {manifest.get('package_version') or 'unknown'} predates "
+            "anchors.json (1.4), so provenance entries are not checked against audit "
+            "anchors: the package proves what Behavry signed, not when",
+        )
+        return
+
+    raw = components.get("anchors.json")
+    exports_raw = raw.get("anchors") if isinstance(raw, dict) else None
+    if not isinstance(exports_raw, list):
+        report.add_fail(
+            check_id,
+            label,
+            'a package_version 1.4 package must carry anchors.json ({"anchors": [...]})',
+        )
+        return
+    exports = [a if isinstance(a, dict) else {} for a in exports_raw]
+
+    failures: list[str] = []
+    if "anchor_count" not in manifest:
+        failures.append("the signed manifest states no anchor_count")
+    elif manifest.get("anchor_count") != len(exports):
+        failures.append(
+            f"anchors.json holds {len(exports)} anchor(s), the signed manifest states "
+            f"anchor_count {manifest.get('anchor_count')}"
+        )
+
+    tenant = manifest.get("tenant_id")
+    rows: list[dict[str, Any]] = []
+    for index, export in enumerate(exports):
+        sub = verify_audit_anchor(
+            export,
+            anchor=anchor,
+            raw_public_key=raw_public_key,
+            trust_source=report.trust_source,
+            tsa_roots=tsa_roots,
+        )
+        failed = [c.id for c in sub.checks if c.status is CheckStatus.FAIL]
+        if tenant is not None and export.get("tenant_id") != tenant:
+            failed.append("tenant")
+        statuses = {c.id: c.status.value for c in sub.checks}
+        summary = sub.anchor_summary or {}
+        ident = export.get("anchor_id") or f"#{index}"
+        period = f"{export.get('period_start')}..{export.get('period_end')}"
+        row = {
+            "anchor_id": export.get("anchor_id"),
+            "schema": export.get("schema"),
+            "period_start": export.get("period_start"),
+            "period_end": export.get("period_end"),
+            "anchor_digest": export.get("anchor_digest"),
+            "provenance_count": export.get("provenance_count"),
+            "verified": sub.verified and not failed,
+            "failed_checks": failed,
+            "signature": statuses.get("signature"),
+            "tsa_gen_time": summary.get("tsa_gen_time"),
+            "tsa_chain": statuses.get("tsa_chain"),
+        }
+        rows.append(row)
+        if failed:
+            what = ", ".join(failed)
+            if "tenant" in failed:
+                what += f" (anchor is for tenant {export.get('tenant_id')!r}, package {tenant!r})"
+            failures.append(f"anchor {ident} ({period}) failed: {what}")
+
+    # Classify each provenance entry of the package.
+    sealed = []
+    for export, row in zip(exports, rows, strict=True):
+        start = _parse_time(export.get("period_start"))
+        end = _parse_time(export.get("period_end"))
+        is_v3 = export.get("schema") == _ANCHOR_V3
+        hashes = set(anchor_provenance_hashes(export) or []) if is_v3 else set()
+        sealed.append((start, end, is_v3, hashes, row))
+    ends = [end for _, end, _, _, _ in sealed if end is not None]
+    latest_end = max(ends) if ends else None
+
+    entries, _ = _entries(components)
+    classified: list[dict[str, Any]] = []
+    counts = {
+        "anchored": 0, "not_yet_anchored": 0, "missing": 0, "unanchored": 0,
+        "anchor_unverified": 0,
+    }
+    missing_named: list[str] = []
+    uncovered_named: list[str] = []
+    for entry in entries or []:
+        h = entry.get("entry_hash")
+        ts = _parse_time(entry.get("timestamp"))
+        item: dict[str, Any] = {
+            "id": entry.get("id"),
+            "entry_hash": h,
+            "timestamp": entry.get("timestamp"),
+            "status": "",
+            "anchor_id": None,
+            "tsa_gen_time": None,
+            "reason": None,
+        }
+        holding = [s for s in sealed if s[2] and h and h in s[3]]
+        verified = [s for s in holding if s[4]["verified"]]
+        if verified:
+            row = verified[0][4]
+            item.update(
+                status="anchored", anchor_id=row["anchor_id"], tsa_gen_time=row["tsa_gen_time"]
+            )
+        elif holding:
+            row = holding[0][4]
+            item.update(
+                status="anchor_unverified",
+                anchor_id=row["anchor_id"],
+                reason="its hash is in an anchor whose own checks did not pass",
+            )
+        else:
+            covering = [
+                s for s in sealed
+                if ts is not None and s[0] is not None and s[1] is not None
+                and s[0] <= ts < s[1]
+            ]
+            v3_cover = [s for s in covering if s[2]]
+            if v3_cover:
+                row = v3_cover[0][4]
+                item.update(
+                    status="missing",
+                    anchor_id=row["anchor_id"],
+                    reason="inside a sealed period, but its hash is not in that anchor: it "
+                    "was added or altered after sealing",
+                )
+                missing_named.append(f"{entry.get('id')!r} (period {row['period_start']})")
+            elif ts is not None and latest_end is not None and ts >= latest_end:
+                item.update(
+                    status="not_yet_anchored",
+                    reason="newer than the latest sealed period in the package",
+                )
+            elif ts is not None and latest_end is None:
+                item.update(
+                    status="not_yet_anchored",
+                    reason="the package carries no anchor yet",
+                )
+            elif covering:
+                row = covering[0][4]
+                item.update(
+                    status="unanchored",
+                    anchor_id=row["anchor_id"],
+                    reason=f"its period was sealed under {row['schema']}, which predates "
+                    "provenance anchoring",
+                )
+            else:
+                item.update(
+                    status="unanchored",
+                    reason="no anchor in the package covers its time"
+                    if ts is not None
+                    else "its timestamp is unreadable",
+                )
+                uncovered_named.append(repr(entry.get("id")))
+        counts[item["status"]] += 1
+        classified.append(item)
+
+    report.provenance_anchoring = {
+        "anchor_count": len(exports),
+        **counts,
+        "anchors": rows,
+        "entries": classified,
+    }
+
+    if missing_named:
+        failures.append(
+            f"{len(missing_named)} provenance entr"
+            f"{'y is' if len(missing_named) == 1 else 'ies are'} missing from the anchor "
+            f"sealing their period: {_named(missing_named)}"
+        )
+
+    tallies = (
+        f"{counts['anchored']} of {len(classified)} provenance entries anchored, "
+        f"{counts['not_yet_anchored']} not yet anchored, {counts['missing']} missing"
+    )
+    if counts["unanchored"]:
+        tallies += f", {counts['unanchored']} unanchored"
+    if failures:
+        report.add_fail(check_id, label, f"{_named(failures)}; {tallies}")
+        return
+    unverified = [r for r in rows if not r["verified"]]
+    if unverified:
+        report.add_skip(
+            check_id,
+            label,
+            f"{len(unverified)} of {len(rows)} anchor(s) could not be verified (their "
+            "Behavry signature is absent, or no trust anchor or public key was available "
+            f"to check it), so nothing in them is proven anchored; "
+            f"{tallies}",
+        )
+        return
+    times = []
+    for row in rows:
+        stamp = row["tsa_gen_time"] or "no TSA"
+        times.append(f"{row['anchor_id']} ({row['period_start']}..{row['period_end']}): {stamp}")
+    detail = f"{tallies}; {len(rows)} anchor(s) verified" + (
+        f": {_named(times)}" if times else ""
+    )
+    if uncovered_named:
+        report.add_warn(
+            check_id,
+            label,
+            f"{detail}. No anchor in this package covers {_named(uncovered_named)}, inside "
+            "the sealed span: ask for the anchors of those periods",
+        )
+        return
+    report.add_pass(check_id, label, detail)

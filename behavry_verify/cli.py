@@ -10,7 +10,8 @@ verification core means they cannot.
 
     behavry-verify --package authority-<agent_id>.zip \\
                    --trust-anchor behavry-trust-anchor.json \\
-                   --observer-anchor minotaur-observer-key.json
+                   --observer-anchor minotaur-observer-key.json \\
+                   [--tsa-roots your-tsa-roots.pem]
 
     behavry-verify --audit-anchor behavry-anchor.json \\
                    --trust-anchor behavry-trust-anchor.json \\
@@ -102,7 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="PEM",
         help=(
-            "PEM bundle of TSA root certificates you trust, for --audit-anchor. "
+            "PEM bundle of TSA root certificates you trust, for --audit-anchor and "
+            "for the audit anchors a 1.4 authority package carries (check 15). "
             "Without it the TSA certificate chain is reported as not validated."
         ),
     )
@@ -155,8 +157,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: could not read observer anchor {path}: {exc}", file=sys.stderr)
             return EXIT_USAGE
 
+    roots = None
+    if args.tsa_roots is not None:
+        try:
+            roots = load_pem_certificates(args.tsa_roots.read_bytes())
+        except (OSError, ValueError) as exc:
+            print(f"error: could not read TSA roots {args.tsa_roots}: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+
     if args.audit_anchor:
-        return _run_audit_anchors(args, anchor, raw_public_key, trust_source)
+        return _run_audit_anchors(args, anchor, raw_public_key, trust_source, roots)
 
     try:
         components = load_package_from_path(args.package)
@@ -170,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         raw_public_key=raw_public_key,
         trust_source=trust_source,
         observer_anchors=observer_anchors,
+        tsa_roots=roots,
     )
 
     if args.json:
@@ -184,15 +195,8 @@ def _run_audit_anchors(
     anchor: dict | None,
     raw_public_key: bytes | None,
     trust_source: TrustSource,
+    roots: list | None,
 ) -> int:
-    roots = None
-    if args.tsa_roots is not None:
-        try:
-            roots = load_pem_certificates(args.tsa_roots.read_bytes())
-        except (OSError, ValueError) as exc:
-            print(f"error: could not read TSA roots {args.tsa_roots}: {exc}", file=sys.stderr)
-            return EXIT_USAGE
-
     exports: list[tuple[Path, dict]] = []
     for path in args.audit_anchor:
         try:

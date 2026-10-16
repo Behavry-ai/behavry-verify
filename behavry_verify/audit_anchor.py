@@ -56,6 +56,8 @@ __all__ = [
     "ANCHOR_SCHEMA",
     "ANCHOR_SCHEMA_V1",
     "ANCHOR_SCHEMA_V2",
+    "ANCHOR_SCHEMA_V3",
+    "anchor_provenance_hashes",
     "canonical_anchor_bytes",
     "verify_audit_anchor",
     "verify_anchor_chain",
@@ -68,9 +70,13 @@ __all__ = [
 ANCHOR_SCHEMA_V1 = "behavry.audit_anchor.v1"
 # AUD-LINK: adds previous_anchor_digest inside the signed bytes.
 ANCHOR_SCHEMA_V2 = "behavry.audit_anchor.v2"
-ANCHOR_SCHEMA = ANCHOR_SCHEMA_V2
+# AG-4 G-1: adds the period's agent provenance (root, count, first/last hash).
+ANCHOR_SCHEMA_V3 = "behavry.audit_anchor.v3"
+ANCHOR_SCHEMA = ANCHOR_SCHEMA_V3
 
-_KNOWN_SCHEMAS = frozenset({ANCHOR_SCHEMA_V1, ANCHOR_SCHEMA_V2})
+_KNOWN_SCHEMAS = frozenset({ANCHOR_SCHEMA_V1, ANCHOR_SCHEMA_V2, ANCHOR_SCHEMA_V3})
+#: Schemas carrying the AUD-LINK back-pointer. v3 keeps it.
+_CHAINED_SCHEMAS = frozenset({ANCHOR_SCHEMA_V2, ANCHOR_SCHEMA_V3})
 
 
 def canonical_anchor_bytes(anchor: dict[str, Any]) -> bytes:
@@ -81,10 +87,13 @@ def canonical_anchor_bytes(anchor: dict[str, Any]) -> bytes:
     verbatim (the exporter already wrote them in UTC microsecond form), since
     re-rendering is a second chance to disagree with the producer.
 
-    ``tenant_id``, ``first_event_hash``, ``last_event_hash`` and (v2)
-    ``previous_anchor_digest`` fall back to ``""`` as the producer does, so
-    ``None`` and ``""`` yield the same bytes. The export's OWN ``schema`` picks
-    the shape, defaulting to v1 for anchors sealed before the field existed.
+    ``tenant_id``, ``first_event_hash``, ``last_event_hash``, (v2, v3)
+    ``previous_anchor_digest`` and (v3) ``first_provenance_hash`` and
+    ``last_provenance_hash`` fall back to ``""`` as the producer does, so
+    ``None`` and ``""`` yield the same bytes; a v3 ``provenance_root`` falls
+    back to the empty root and ``provenance_count`` to 0, again as the producer
+    does (AG4-CONTRACTS section 1). The export's OWN ``schema`` picks the
+    shape, defaulting to v1 for anchors sealed before the field existed.
     """
     schema = anchor.get("schema") or ANCHOR_SCHEMA_V1
     payload = {
@@ -97,8 +106,14 @@ def canonical_anchor_bytes(anchor: dict[str, Any]) -> bytes:
         "first_event_hash": anchor.get("first_event_hash") or "",
         "last_event_hash": anchor.get("last_event_hash") or "",
     }
-    if schema == ANCHOR_SCHEMA_V2:
+    if schema in _CHAINED_SCHEMAS:
         payload["previous_anchor_digest"] = anchor.get("previous_anchor_digest") or ""
+    if schema == ANCHOR_SCHEMA_V3:
+        count = anchor.get("provenance_count")
+        payload["provenance_count"] = 0 if count is None else count
+        payload["provenance_root"] = anchor.get("provenance_root") or merkle_root([])
+        payload["first_provenance_hash"] = anchor.get("first_provenance_hash") or ""
+        payload["last_provenance_hash"] = anchor.get("last_provenance_hash") or ""
     return json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode(
         "utf-8"
     )
@@ -327,9 +342,145 @@ def verify_audit_anchor(
                 f"{len(signed)} of {len(events or [])} records individually signed and verified",
             )
 
+    # -- 4b. Provenance (v3) ---------------------------------------------------
+    if schema == ANCHOR_SCHEMA_V3:
+        _check_provenance(report, export, anchor, raw_public_key)
+
     # -- 5 to 7. The RFC 3161 token ---------------------------------------------
     _check_token(report, export, tsa, digest_hex, tsa_roots)
     return report.finalize()
+
+
+def anchor_provenance_hashes(export: dict[str, Any]) -> list[str] | None:
+    """The ``entry_hash`` leaves of a v3 export's provenance records, in order.
+
+    ``None`` when the export carries no ``provenance`` array. Records without a
+    hash are not leaves (the producer filters the same way), though they count
+    toward ``provenance_count``.
+    """
+    raw = export.get("provenance")
+    if not isinstance(raw, list):
+        return None
+    return [str(r["entry_hash"]) for r in raw if isinstance(r, dict) and r.get("entry_hash")]
+
+
+def _check_provenance(
+    report: VerificationReport,
+    export: dict[str, Any],
+    anchor: dict[str, Any] | None,
+    raw_public_key: bytes | None,
+) -> None:
+    """AG-4 G-1: recompute the provenance commitment from the hash-only records.
+
+    Mirrors ``audit/anchoring.collect_period_provenance``: the root is the same
+    Merkle construction as the event root, over every hashed record's
+    ``entry_hash`` in ``(timestamp, id)`` order; the count covers all records.
+    Each record's own Behavry signature (agent-claim form, claim type
+    ``provenance``) is checked too, which the contract does not require but
+    costs nothing and binds each record's link and time, not just its hash.
+    """
+    from behavry_verify.hashbody import canonical_signing_bytes_agent_claim
+
+    summary = report.anchor_summary if report.anchor_summary is not None else {}
+    summary["provenance_count"] = export.get("provenance_count")
+    summary["provenance_root"] = export.get("provenance_root")
+
+    raw = export.get("provenance")
+    hashes = anchor_provenance_hashes(export)
+    if hashes is None:
+        report.add_fail(
+            "provenance_root",
+            "Provenance root matches",
+            "a v3 anchor export must carry a provenance array to recompute the root from",
+        )
+        return
+    records = [r for r in raw if isinstance(r, dict)]  # type: ignore[union-attr]
+    claimed_root = export.get("provenance_root") or merkle_root([])
+    recomputed = merkle_root(hashes)
+    if recomputed == claimed_root:
+        report.add_pass(
+            "provenance_root",
+            "Provenance root matches",
+            f"recomputed over {len(hashes)} provenance entry hash(es)",
+        )
+    else:
+        report.add_fail(
+            "provenance_root",
+            "Provenance root matches",
+            f"recomputed {recomputed}, anchor claims {claimed_root} (a provenance record "
+            "was added, removed, reordered or altered)",
+        )
+    stated = export.get("provenance_count")
+    stated = 0 if stated is None else stated
+    if stated == len(records):
+        report.add_pass(
+            "provenance_count", "Provenance count verified", f"{len(records)} records"
+        )
+    else:
+        report.add_fail(
+            "provenance_count",
+            "Provenance count verified",
+            f"export holds {len(records)} provenance record(s), anchor claims {stated}",
+        )
+    problems = []
+    if (export.get("first_provenance_hash") or None) != (hashes[0] if hashes else None):
+        problems.append("first_provenance_hash does not match the first record")
+    if (export.get("last_provenance_hash") or None) != (hashes[-1] if hashes else None):
+        problems.append("last_provenance_hash does not match the last record")
+    if problems:
+        report.add_fail(
+            "provenance_boundary_hashes",
+            "First and last provenance hashes match",
+            "; ".join(problems),
+        )
+    else:
+        report.add_pass(
+            "provenance_boundary_hashes", "First and last provenance hashes match"
+        )
+
+    label = "Provenance record signatures valid"
+    signed = [r for r in records if r.get("signature_b64")]
+    if not signed:
+        report.add_skip(
+            "provenance_signatures", label, "no anchored provenance record carries a signature"
+        )
+        return
+    if anchor is None and raw_public_key is None:
+        report.add_skip(
+            "provenance_signatures", label, "no trust anchor or public key available"
+        )
+        return
+    failures: list[str] = []
+    for index, record in enumerate(signed):
+        key = raw_public_key
+        if anchor is not None:
+            try:
+                key, _ = select_key_for_timestamp(
+                    anchor, record.get("signer_kid"), record.get("timestamp")
+                )
+            except AnchorError as exc:
+                failures.append(f"record #{index} ({record.get('id')!r}): {exc}")
+                continue
+        payload = canonical_signing_bytes_agent_claim(
+            claim_type="provenance",
+            event_hash=record.get("entry_hash"),
+            previous_hash=record.get("previous_hash"),
+            timestamp=record.get("timestamp"),
+            tenant_id=export.get("tenant_id"),
+            agent_id=record.get("agent_id"),
+        )
+        if key is None or not _verify_ed25519(key, str(record["signature_b64"]), payload):
+            failures.append(f"record #{index} ({record.get('id')!r}) signature failed")
+    if failures:
+        extra = f" (+{len(failures) - 1} more)" if len(failures) > 1 else ""
+        report.add_fail("provenance_signatures", label, failures[0] + extra)
+    else:
+        report.add_pass(
+            "provenance_signatures",
+            label,
+            f"{len(signed)} of {len(records)} provenance records individually signed and "
+            "verified",
+        )
 
 
 def _check_token(
@@ -445,7 +596,7 @@ def verify_anchor_chain(exports: list[dict[str, Any]]) -> tuple[bool, list[str]]
     """Walk a set of anchor exports and report whether a period is missing.
 
     Port of ``tools/verify_event.py::verify_anchor_chain`` (Sprint AUD-LINK).
-    Each v2 anchor commits to its predecessor's ``anchor_digest`` inside its own
+    Each v2 (and v3) anchor commits to its predecessor's ``anchor_digest`` inside its own
     signed and timestamped bytes. Two findings mean opposite things:
 
     * **MISSING PERIOD**: a back-pointer names a digest no supplied anchor has.
@@ -476,7 +627,7 @@ def verify_anchor_chain(exports: list[dict[str, Any]]) -> tuple[bool, list[str]]
     seen_chained = False
     for i, item in enumerate(ordered):
         label = f"{item.get('period_start')}..{item.get('period_end')}"
-        if (item.get("schema") or ANCHOR_SCHEMA_V1) != ANCHOR_SCHEMA_V2:
+        if (item.get("schema") or ANCHOR_SCHEMA_V1) not in _CHAINED_SCHEMAS:
             unchained += 1
             continue
         stated = item.get("previous_anchor_digest") or None

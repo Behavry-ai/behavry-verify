@@ -52,6 +52,7 @@ from behavry_verify.authority import (
     check_assessments,
     check_lifecycle,
     check_provenance,
+    check_provenance_anchoring,
     is_authority_package,
 )
 from behavry_verify.canonical import (
@@ -348,8 +349,12 @@ def verify_package(
     raw_public_key: bytes | None = None,
     trust_source: TrustSource = TrustSource.NONE,
     observer_anchors: list[dict[str, Any]] | None = None,
+    tsa_roots: list[Any] | None = None,
 ) -> VerificationReport:
     """Verify an assembled evidence package and return a full report.
+
+    ``tsa_roots`` are TSA root certificates the verifying party trusts, used by
+    check 15 for the RFC 3161 tokens on the audit anchors a 1.4 package carries.
 
     ``observer_anchors`` are the public keys of independent observers (see
     :func:`behavry_verify.anchor.validate_observer_anchors`), supplied by the
@@ -539,6 +544,10 @@ def verify_package(
         check_provenance(report, components, manifest, anchor, raw_public_key, public_key)
         check_assessments(report, components, manifest, observer_anchors or [])
         check_lifecycle(report, components)
+        # -- 15. Provenance anchored (1.4) ------------------------------------
+        check_provenance_anchoring(
+            report, components, manifest, anchor, raw_public_key, tsa_roots
+        )
 
     return report.finalize()
 
