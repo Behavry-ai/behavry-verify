@@ -28,6 +28,15 @@ It is built with the same helpers as the APR package, so checks 1 to 11 in
     period but not in its anchor: a failure, because it was added or altered
     after sealing). See ``docs/strategy/AG4-CONTRACTS.md`` section 4.
 
+    Package 1.5 (Sprint AG-5 H-1, ``docs/strategy/AG5-CONTRACTS.md`` section 2)
+    makes ``anchors.json`` a contiguous run of v3 anchors over the package's
+    span, as provenance-only records (``records: "provenance"``, no events, so
+    the event checks are skipped, never passed). Across the run the AUD-LINK
+    chain must be unbroken, and ``anchor_count`` and ``anchor_head_digest`` in
+    the signed manifest must match it. A withheld anchor then fails: in the
+    middle it breaks the chain, at the head it breaks the head digest, and an
+    entry inside the span but in no anchor's period is missing, not a warning.
+
 Counterparts (repo ``Behavry-ai/behavry``):
 
   ``provenance_canonical_body`` -> ``backend/behavry/authority/provenance.py``
@@ -465,13 +474,25 @@ def check_lifecycle(report: VerificationReport, components: dict[str, Any]) -> N
 
 
 # ---------------------------------------------------------------------------
-# 15. Provenance anchored (package 1.4)
+# 15. Provenance anchored (package 1.4, and the chained run of 1.5)
 # ---------------------------------------------------------------------------
 
 #: The first package version that carries ``anchors.json``.
 ANCHORING_MIN_VERSION = (1, 4)
+#: AG-5 H-1: ``anchors.json`` is a contiguous AUD-LINK run (check 15 v2).
+ANCHOR_CHAIN_MIN_VERSION = (1, 5)
 
 _ANCHOR_V3 = "behavry.audit_anchor.v3"
+
+
+def _in_span_gap(sealed: list[Any], ts: Any) -> bool:
+    """True when ``ts`` lies inside the run's span but in no anchor's period."""
+    bounds = [(s[0], s[1]) for s in sealed if s[0] is not None and s[1] is not None]
+    if not bounds:
+        return False
+    first = min(start for start, _ in bounds)
+    last = max(end for _, end in bounds)
+    return first <= ts < last and not any(start <= ts < end for start, end in bounds)
 
 
 def check_provenance_anchoring(
@@ -486,6 +507,9 @@ def check_provenance_anchoring(
 
     The result is written to ``report.provenance_anchoring`` as well as to the
     check: counts per class, one row per anchor, and one per provenance entry.
+    A 1.5 package adds the chain (``chain_unbroken``, ``chain_breaks``) and the
+    head digest, and per anchor ``records``, ``previous_anchor_digest``,
+    ``event_checks`` and ``linked``. A 1.4 report keeps its AG-4 shape.
     """
     # Imported here: audit_anchor imports package, which imports this module.
     from behavry_verify.audit_anchor import (
@@ -498,7 +522,9 @@ def check_provenance_anchoring(
 
     check_id = "provenance_anchoring"
     label = "Provenance anchored"
-    if _package_version_tuple(manifest) < ANCHORING_MIN_VERSION:
+    version = _package_version_tuple(manifest)
+    chained = version >= ANCHOR_CHAIN_MIN_VERSION
+    if version < ANCHORING_MIN_VERSION:
         report.add_skip(
             check_id,
             label,
@@ -514,7 +540,8 @@ def check_provenance_anchoring(
         report.add_fail(
             check_id,
             label,
-            'a package_version 1.4 package must carry anchors.json ({"anchors": [...]})',
+            f"a package_version {manifest.get('package_version')} package must carry "
+            'anchors.json ({"anchors": [...]})',
         )
         return
     exports = [a if isinstance(a, dict) else {} for a in exports_raw]
@@ -527,6 +554,18 @@ def check_provenance_anchoring(
             f"anchors.json holds {len(exports)} anchor(s), the signed manifest states "
             f"anchor_count {manifest.get('anchor_count')}"
         )
+    if chained:
+        # AG5-CONTRACTS section 2 item 6: the manifest commits to the head of
+        # the run, so the newest anchor cannot be dropped and re-counted.
+        head = exports[-1].get("anchor_digest") if exports else None
+        if "anchor_head_digest" not in manifest:
+            failures.append("the signed manifest states no anchor_head_digest")
+        elif manifest.get("anchor_head_digest") != head:
+            failures.append(
+                f"the signed manifest states anchor_head_digest "
+                f"{manifest.get('anchor_head_digest')}, the last anchor in anchors.json has "
+                f"{head}"
+            )
 
     tenant = manifest.get("tenant_id")
     rows: list[dict[str, Any]] = []
@@ -558,12 +597,53 @@ def check_provenance_anchoring(
             "tsa_gen_time": summary.get("tsa_gen_time"),
             "tsa_chain": statuses.get("tsa_chain"),
         }
+        if chained:
+            row.update(
+                {
+                    "records": export.get("records"),
+                    "previous_anchor_digest": export.get("previous_anchor_digest"),
+                    # skip for a provenance-only record: never a pass.
+                    "event_checks": statuses.get("merkle_root"),
+                    "linked": None,
+                }
+            )
+            if export.get("schema") != _ANCHOR_V3:
+                failed.append("schema")
         rows.append(row)
         if failed:
             what = ", ".join(failed)
             if "tenant" in failed:
                 what += f" (anchor is for tenant {export.get('tenant_id')!r}, package {tenant!r})"
+            if "schema" in failed:
+                what += (
+                    f" (a package 1.5 carries {_ANCHOR_V3} anchors only, this one is "
+                    f"{export.get('schema')!r})"
+                )
             failures.append(f"anchor {ident} ({period}) failed: {what}")
+
+    # AG5-CONTRACTS section 2 item 5: the AUD-LINK chain across the run. The
+    # first anchor's predecessor is outside the span and is not checked.
+    breaks: list[dict[str, Any]] = []
+    if chained:
+        for index in range(1, len(exports)):
+            before, after = exports[index - 1], exports[index]
+            linked = bool(after.get("previous_anchor_digest")) and (
+                after.get("previous_anchor_digest") == before.get("anchor_digest")
+            )
+            rows[index]["linked"] = linked
+            if not linked:
+                breaks.append(
+                    {
+                        "after_anchor_id": before.get("anchor_id"),
+                        "before_anchor_id": after.get("anchor_id"),
+                        "period_end": before.get("period_end"),
+                        "period_start": after.get("period_start"),
+                    }
+                )
+                failures.append(
+                    f"anchor chain broken between {before.get('period_end')} and "
+                    f"{after.get('period_start')}: an anchor is missing"
+                )
 
     # Classify each provenance entry of the package.
     sealed = []
@@ -626,6 +706,24 @@ def check_provenance_anchoring(
                     "was added or altered after sealing",
                 )
                 missing_named.append(f"{entry.get('id')!r} (period {row['period_start']})")
+            elif chained and ts is not None and _in_span_gap(sealed, ts):
+                # AG5-CONTRACTS section 2 item 7: with every anchor of the span
+                # present, a gap between two of them is a period that held
+                # nothing when it was sealed. An entry there was written later
+                # and backdated. Under a broken chain it may instead sit in the
+                # withheld anchor; the check fails on the break either way.
+                item.update(
+                    status="missing",
+                    reason=(
+                        "inside the anchored span but in no anchor's period: the chain "
+                        "is broken here, so the anchor sealing it may have been withheld"
+                    )
+                    if breaks
+                    else "inside the anchored span but in no anchor's period: that "
+                    "period held nothing when it was sealed, so the entry was written "
+                    "later and backdated",
+                )
+                missing_named.append(f"{entry.get('id')!r} (at {entry.get('timestamp')})")
             elif ts is not None and latest_end is not None and ts >= latest_end:
                 item.update(
                     status="not_yet_anchored",
@@ -644,6 +742,12 @@ def check_provenance_anchoring(
                     reason=f"its period was sealed under {row['schema']}, which predates "
                     "provenance anchoring",
                 )
+            elif chained and ts is not None:
+                item.update(
+                    status="unanchored",
+                    reason="before the first anchor's period: it predates provenance "
+                    "anchoring (v3)",
+                )
             else:
                 item.update(
                     status="unanchored",
@@ -661,6 +765,15 @@ def check_provenance_anchoring(
         "anchors": rows,
         "entries": classified,
     }
+    if chained:
+        report.provenance_anchoring.update(
+            {
+                "package_version": manifest.get("package_version"),
+                "anchor_head_digest": exports[-1].get("anchor_digest") if exports else None,
+                "chain_unbroken": not breaks,
+                "chain_breaks": breaks,
+            }
+        )
 
     if missing_named:
         failures.append(
@@ -696,6 +809,13 @@ def check_provenance_anchoring(
     detail = f"{tallies}; {len(rows)} anchor(s) verified" + (
         f": {_named(times)}" if times else ""
     )
+    if chained and len(rows) > 1:
+        detail += f"; chain unbroken across {len(rows)} anchors"
+    if chained and any(r.get("records") == "provenance" for r in rows):
+        detail += (
+            "; event checks skipped on provenance-only anchor records (the package's own "
+            "events are covered by its Merkle root and signatures)"
+        )
     if uncovered_named:
         report.add_warn(
             check_id,

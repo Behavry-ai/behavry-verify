@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.5.0
+
+Sprint AG-5 (H-1, a withheld anchor fails), following Behavry's
+`docs/strategy/AG5-CONTRACTS.md`.
+
+### Added
+
+- **Check 15 v2 for authority packages 1.5.** `anchors.json` is the whole run
+  of v3 anchors over the package's span. Across it the AUD-LINK chain must be
+  unbroken (each `previous_anchor_digest` equals the previous anchor's
+  `anchor_digest`), or the check fails with "anchor chain broken between
+  <period_end> and <period_start>: an anchor is missing". The signed
+  manifest's `anchor_count` and new `anchor_head_digest` must match the run,
+  and every anchor in it must be v3. With the chain unbroken, an entry inside
+  the span but in no anchor's period is `missing` and fails, where 1.4 only
+  warned. An empty run passes with every entry not yet anchored.
+- **Provenance-only anchor records.** An export with `"records": "provenance"`
+  and no `events` is accepted by check 15 and by `--audit-anchor` and
+  `POST /api/v1/verify-anchor`. Its event Merkle root, count, boundary hashes
+  and event signatures are reported skipped, with the contract's reason, never
+  passed; the digest and signature still cover the event fields. The flag is
+  defined for v3 only, so on a v1 or v2 anchor it fails, and an unknown
+  `records` value warns and is checked as a full record.
+- The 1.5 JSON report adds `package_version`, `anchor_head_digest`,
+  `chain_unbroken` and `chain_breaks` to `provenance_anchoring`, and
+  `records`, `previous_anchor_digest`, `event_checks` and `linked` to each
+  anchor row. The text and web reports show the chain, and the web summary of
+  a provenance-only anchor says its event checks were skipped.
+- Tests pin the unknown provenance entry type `device_bound` as informational,
+  including on the lifecycle line, and pin the limit 1.5 leaves open: a key
+  holder dropping the newest anchors and re-signing the manifest.
+
+### Unchanged
+
+- Packages 1.4 keep the AG-4 behaviour and report shape, warning included.
+  Packages older than 1.4 still skip check 15.
+
 ## 0.4.0
 
 Sprint AG-4 (G-1 verifier and G-7), following Behavry's

@@ -781,6 +781,7 @@ class AuthorityPackageBuilder(PackageBuilder):
                     if "anchors.json" in data_files
                     else {}
                 ),
+                **self.extra_manifest(data_files),
                 "file_digests": {
                     name: "sha256:" + _sha256_hex(_dump(data_files[name]))
                     for name in AUTHORITY_DIGESTED_FILES
@@ -797,6 +798,10 @@ class AuthorityPackageBuilder(PackageBuilder):
             "signature.json": base["signature.json"],
             "verification_metadata.json": base["verification_metadata.json"],
         }
+
+    def extra_manifest(self, data_files: dict[str, Any]) -> dict[str, Any]:
+        """Manifest keys a later package version adds (none before 1.5)."""
+        return {}
 
     def zip_bytes(self, components: dict[str, Any] | None = None) -> bytes:
         components = components if components is not None else self.components()
@@ -907,6 +912,7 @@ class AnchoredAuthorityPackageBuilder(AuthorityPackageBuilder):
         *,
         timestamped: bool = True,
         records: list[dict[str, Any]] | None = None,
+        provenance_only: bool = False,
     ) -> dict[str, Any]:
         """What ``seal_period`` writes and ``anchor_export_payload`` exports (v3).
 
@@ -964,6 +970,10 @@ class AnchoredAuthorityPackageBuilder(AuthorityPackageBuilder):
                 "provenance": records,
             }
         )
+        if provenance_only:
+            # AG5-CONTRACTS section 1: the package 1.5 form of the same export.
+            del anchor["events"]
+            anchor["records"] = "provenance"
         return anchor
 
     def components(self) -> dict[str, Any]:
@@ -980,3 +990,100 @@ class AnchoredAuthorityPackageBuilder(AuthorityPackageBuilder):
 @pytest.fixture
 def anchored_builder() -> AnchoredAuthorityPackageBuilder:
     return AnchoredAuthorityPackageBuilder()
+
+
+# ---------------------------------------------------------------------------
+# Authority evidence package 1.5: a contiguous anchor run (Sprint AG-5 H-1)
+# ---------------------------------------------------------------------------
+
+OTHER_AGENT_ID = "agent-other-0002"
+
+
+class ChainedAuthorityPackageBuilder(AnchoredAuthorityPackageBuilder):
+    """A 1.5 authority package whose ``anchors.json`` is the whole AUD-LINK run.
+
+    Four v3 anchors, chained and timestamped, as provenance-only records
+    (``records: "provenance"``, no ``events``):
+
+    * 11:00-11:04 seals entries 0 to 3, plus one entry of another agent of the
+      tenant (the records are tenant-wide, AG5-CONTRACTS section 1);
+    * 11:04-11:07 seals entries 4 to 6;
+    * 11:07-11:11 seals entries 7 to 10, so it seals the package's last entry;
+    * 11:11-11:15 is empty: the first anchor whose period starts after the last
+      entry, which ends the run.
+
+    Every entry is anchored. ``periods`` can be passed to model other runs, and
+    ``manifest_overrides`` replaces signed manifest keys.
+    """
+
+    authority_version = "1.5"
+
+    def __init__(
+        self,
+        *,
+        tsa: Any | None = None,
+        periods: list[tuple[datetime, datetime]] | None = None,
+    ) -> None:
+        self._chain_periods = periods
+        self.manifest_overrides: dict[str, Any] = {}
+        super().__init__(tsa=tsa)
+
+    def seal_periods(self) -> list[dict[str, Any]]:
+        base = datetime(2026, 10, 15, 11, 0, 0, tzinfo=UTC)
+        self.periods = self._chain_periods or [
+            (base, base + timedelta(minutes=4)),
+            (base + timedelta(minutes=4), base + timedelta(minutes=7)),
+            (base + timedelta(minutes=7), base + timedelta(minutes=11)),
+            (base + timedelta(minutes=11), base + timedelta(minutes=15)),
+        ]
+        self.foreign_entries = [self._foreign_entry(base + timedelta(minutes=2, seconds=30))]
+        anchors: list[dict[str, Any]] = []
+        previous: str | None = None
+        for start, end in self.periods:
+            sealed = self.seal_anchor(
+                start, end, self.tenant_entries_in(start, end), previous, provenance_only=True
+            )
+            anchors.append(sealed)
+            previous = sealed["anchor_digest"]
+        return anchors
+
+    def tenant_entries_in(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        """Every provenance entry of the tenant in the period, ordered (timestamp, id)."""
+        found = [
+            e for e in [*self.entries, *self.foreign_entries]
+            if start <= datetime.fromisoformat(e["timestamp"]) < end
+        ]
+        return sorted(found, key=lambda e: (datetime.fromisoformat(e["timestamp"]), e["id"]))
+
+    def _foreign_entry(self, when: datetime) -> dict[str, Any]:
+        from behavry_verify.jcs import content_digest
+
+        body = {"name": "Other-Agent"}
+        entry = {
+            "id": "prov-other-0000",
+            "agent_id": OTHER_AGENT_ID,
+            "tenant_id": self.tenant_id,
+            "timestamp": when.isoformat(),
+            "entry_type": "registered",
+            "actor": "system",
+            "summary": "Agent registered",
+            "body": body,
+            "body_digest": content_digest(body),
+            "evidence_refs": [],
+            "previous_hash": None,
+            "signer_kid": self.kid,
+        }
+        self.seal_entry(entry)
+        return entry
+
+    def extra_manifest(self, data_files: dict[str, Any]) -> dict[str, Any]:
+        anchors = data_files.get("anchors.json", {}).get("anchors", [])
+        return {
+            "anchor_head_digest": anchors[-1]["anchor_digest"] if anchors else None,
+            **self.manifest_overrides,
+        }
+
+
+@pytest.fixture
+def chained_builder() -> ChainedAuthorityPackageBuilder:
+    return ChainedAuthorityPackageBuilder()

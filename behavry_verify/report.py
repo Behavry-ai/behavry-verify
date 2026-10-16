@@ -93,6 +93,7 @@ _ANCHOR_LABELS: dict[str, str] = {
     "tsa_policy": "TSA policy",
     "provenance_count": "Provenance entries",
     "provenance_root": "Provenance root",
+    "records": "Records carried",
 }
 
 
@@ -276,6 +277,11 @@ class VerificationReport:
                 f"missing, {pa.get('unanchored', 0)} unanchored "
                 f"(across {pa.get('anchor_count', 0)} anchor(s))"
             )
+            if "chain_unbroken" in pa:
+                lines.append(
+                    f"  {'Anchor chain'.ljust(width)}  "
+                    + ("unbroken" if pa["chain_unbroken"] else "BROKEN: an anchor is missing")
+                )
         lines.append("")
         lines.append(f"  {self.caveat}")
         if self.error:
