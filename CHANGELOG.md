@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.6.0
+
+Sprint AG-6 (independent anchor head), following Behavry's
+`docs/strategy/AG6-CONTRACTS.md`.
+
+### Added
+
+- **Header-only anchor records.** An export with `"records": "header"`, of any
+  schema, carries the signed fields and no records. `--audit-anchor`,
+  `POST /api/v1/verify-anchor` and check 15 verify its digest, signature and
+  RFC 3161 token, and report every event and provenance record check skipped
+  with the contract's reason, never passed. A header that carries records
+  anyway warns, and they are ignored.
+- **Check 15 v3 for authority packages 1.6.** `anchors.json` carries the run's
+  `predecessor` as a header-only record, and the signed manifest states
+  `anchor_predecessor_digest`. When the first anchor points back, the
+  predecessor must be present, match that pointer and the manifest, verify
+  under the trust anchor and be for the package's tenant; when the run is
+  empty or starts the chain, both must be null (P1). When the predecessor is
+  v3, an entry older than the run is `missing` and fails, which closes front
+  truncation (P2); with a v1 or v2 predecessor, or none, it stays
+  `unanchored`.
+- **Anchor heads: `--anchor-head FILE`**, repeatable, and the repeatable file
+  field `anchor_head` on `POST /api/v1/verify` and `/api/v1/verify.txt`, with a
+  file input on the package form. Heads apply to packages 1.4, 1.5 and 1.6.
+  A head must verify (header-only or full record) and be for the package's
+  tenant, or it is reported, not used, and fails the check (H1). A head with
+  a run anchor's `period_start` but another digest is a fork and fails (H2).
+  Every entry older than a verified head's `period_end` must be anchored, so
+  an entry that would read not yet anchored is `missing` and fails, which
+  closes tail truncation by a key holder (H3). When the head was sealed after
+  the package was created, the finding says the package may simply predate
+  it. With no head, the report carries the H4 note.
+- The JSON report adds `heads`, `head_note` and (1.6) `predecessor` to
+  `provenance_anchoring`. The text and web reports show the predecessor, each
+  head and the H4 note.
+
+### Unchanged
+
+- Packages 1.4 and 1.5 behave as before when no head is supplied, report
+  shape included. Packages older than 1.4 skip check 15, and say that any
+  heads supplied were not applied.
+
 ## 0.5.0
 
 Sprint AG-5 (H-1, a withheld anchor fails), following Behavry's

@@ -37,6 +37,15 @@ It is built with the same helpers as the APR package, so checks 1 to 11 in
     middle it breaks the chain, at the head it breaks the head digest, and an
     entry inside the span but in no anchor's period is missing, not a warning.
 
+    Package 1.6 (Sprint AG-6, ``docs/strategy/AG6-CONTRACTS.md`` section 4)
+    adds the run's ``predecessor`` as a header-only record, committed to by
+    ``anchor_predecessor_digest`` in the signed manifest, which closes front
+    truncation: when it is v3, anchoring had already begun, so entries before
+    the run are missing. Tail truncation is closed by anchor heads the
+    verifying party obtains independently (``--anchor-head``): every entry
+    older than a verified head's period end must be anchored. Heads apply to
+    1.4 and 1.5 packages too, because they are evidence about the tenant.
+
 Counterparts (repo ``Behavry-ai/behavry``):
 
   ``provenance_canonical_body`` -> ``backend/behavry/authority/provenance.py``
@@ -46,6 +55,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from behavry_verify.anchor import AnchorError, select_key_for_timestamp
@@ -481,6 +491,14 @@ def check_lifecycle(report: VerificationReport, components: dict[str, Any]) -> N
 ANCHORING_MIN_VERSION = (1, 4)
 #: AG-5 H-1: ``anchors.json`` is a contiguous AUD-LINK run (check 15 v2).
 ANCHOR_CHAIN_MIN_VERSION = (1, 5)
+#: AG-6: ``anchors.json`` carries the run's predecessor (check 15 v3).
+ANCHOR_PREDECESSOR_MIN_VERSION = (1, 6)
+
+#: AG6-CONTRACTS section 4, H4, verbatim.
+NO_HEAD_NOTE = (
+    "no independent anchor head supplied: truncation of the newest anchors cannot be "
+    "ruled out"
+)
 
 _ANCHOR_V3 = "behavry.audit_anchor.v3"
 
@@ -502,6 +520,7 @@ def check_provenance_anchoring(
     anchor: dict[str, Any] | None,
     raw_public_key: bytes | None,
     tsa_roots: list[Any] | None,
+    heads: list[dict[str, Any]] | None = None,
 ) -> None:
     """Check 15: every anchor in ``anchors.json``, then classify each entry.
 
@@ -510,6 +529,11 @@ def check_provenance_anchoring(
     A 1.5 package adds the chain (``chain_unbroken``, ``chain_breaks``) and the
     head digest, and per anchor ``records``, ``previous_anchor_digest``,
     ``event_checks`` and ``linked``. A 1.4 report keeps its AG-4 shape.
+
+    ``heads`` are anchor records the verifying party obtained independently of
+    the package (``GET /api/v1/audit/anchors/head``, AG6-CONTRACTS section 2).
+    A 1.6 report, or any report given a head, adds ``heads`` and
+    ``head_note``; a 1.6 report adds ``predecessor``.
     """
     # Imported here: audit_anchor imports package, which imports this module.
     from behavry_verify.audit_anchor import (
@@ -524,13 +548,18 @@ def check_provenance_anchoring(
     label = "Provenance anchored"
     version = _package_version_tuple(manifest)
     chained = version >= ANCHOR_CHAIN_MIN_VERSION
+    with_predecessor = version >= ANCHOR_PREDECESSOR_MIN_VERSION
+    heads = list(heads or [])
     if version < ANCHORING_MIN_VERSION:
+        unused = (
+            f"; the {len(heads)} anchor head(s) supplied were not applied" if heads else ""
+        )
         report.add_skip(
             check_id,
             label,
             f"package_version {manifest.get('package_version') or 'unknown'} predates "
             "anchors.json (1.4), so provenance entries are not checked against audit "
-            "anchors: the package proves what Behavry signed, not when",
+            "anchors: the package proves what Behavry signed, not when" + unused,
         )
         return
 
@@ -616,8 +645,8 @@ def check_provenance_anchoring(
                 what += f" (anchor is for tenant {export.get('tenant_id')!r}, package {tenant!r})"
             if "schema" in failed:
                 what += (
-                    f" (a package 1.5 carries {_ANCHOR_V3} anchors only, this one is "
-                    f"{export.get('schema')!r})"
+                    f" (a package 1.5 or later carries {_ANCHOR_V3} anchors only, this "
+                    f"one is {export.get('schema')!r})"
                 )
             failures.append(f"anchor {ident} ({period}) failed: {what}")
 
@@ -645,7 +674,137 @@ def check_provenance_anchoring(
                     f"{after.get('period_start')}: an anchor is missing"
                 )
 
+    def _verify_record(record: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+        sub = verify_audit_anchor(
+            record,
+            anchor=anchor,
+            raw_public_key=raw_public_key,
+            trust_source=report.trust_source,
+            tsa_roots=tsa_roots,
+        )
+        failed = [c.id for c in sub.checks if c.status is CheckStatus.FAIL]
+        if tenant is None or record.get("tenant_id") != tenant:
+            failed.append("tenant")
+        if not sub.verified and not failed:
+            # Nothing failed, yet nothing proves who sealed it either.
+            failed.append("signature not checked")
+        return sub.verified and not failed, failed, sub.anchor_summary or {}
+
+    def _what(record: dict[str, Any], failed: list[str]) -> str:
+        what = ", ".join(failed)
+        if "tenant" in failed:
+            what += f" (record is for tenant {record.get('tenant_id')!r}, package {tenant!r})"
+        return what
+
+    # AG6-CONTRACTS section 4, P1: the run's predecessor (package 1.6).
+    predecessor_row: dict[str, Any] | None = None
+    predecessor_v3 = False
+    predecessor: dict[str, Any] | None = None
+    if with_predecessor:
+        pointer = (exports[0].get("previous_anchor_digest") or None) if exports else None
+        pred_raw = raw.get("predecessor")
+        if pred_raw is not None and not isinstance(pred_raw, dict):
+            failures.append("anchors.json predecessor is neither an anchor record nor null")
+        predecessor = pred_raw if isinstance(pred_raw, dict) else None
+        pred_digest = predecessor.get("anchor_digest") if predecessor is not None else None
+        if "anchor_predecessor_digest" not in manifest:
+            failures.append("the signed manifest states no anchor_predecessor_digest")
+        elif manifest.get("anchor_predecessor_digest") != pred_digest:
+            failures.append(
+                f"the signed manifest states anchor_predecessor_digest "
+                f"{manifest.get('anchor_predecessor_digest')}, the predecessor in "
+                f"anchors.json has {pred_digest}"
+            )
+        if predecessor is not None:
+            ok, failed, pred_summary = _verify_record(predecessor)
+            if predecessor.get("records") != "header":
+                failed.append("records")
+                ok = False
+            ident = predecessor.get("anchor_id") or "predecessor"
+            predecessor_row = {
+                "anchor_id": predecessor.get("anchor_id"),
+                "schema": predecessor.get("schema"),
+                "anchor_digest": pred_digest,
+                "verified": ok,
+                "period_start": predecessor.get("period_start"),
+                "period_end": predecessor.get("period_end"),
+                "failed_checks": failed,
+            }
+            predecessor_v3 = predecessor.get("schema") == _ANCHOR_V3
+            if not ok:
+                what = _what(predecessor, failed)
+                if "records" in failed:
+                    what += (
+                        f" (the predecessor is a header-only record, this one carries "
+                        f"records {predecessor.get('records')!r})"
+                    )
+                failures.append(f"predecessor {ident} does not verify: {what}")
+            if pointer is None:
+                failures.append(
+                    "anchors.json carries a predecessor, but "
+                    + (
+                        "the run is empty"
+                        if not exports
+                        else "the first anchor starts the chain (no previous_anchor_digest)"
+                    )
+                    + ", so it must be null"
+                )
+            elif pred_digest != pointer:
+                failures.append(
+                    f"the predecessor's digest {pred_digest} is not the first anchor's "
+                    f"previous_anchor_digest {pointer}: it is not the anchor before the run"
+                )
+        elif pointer is not None:
+            failures.append(
+                f"the first anchor's previous_anchor_digest is {pointer}, but anchors.json "
+                "carries no predecessor, so where the run begins cannot be confirmed"
+            )
+
+    # AG6-CONTRACTS section 4, H1 and H2: anchor heads supplied by the
+    # verifying party. A head that does not verify is a finding, and unused.
+    head_rows: list[dict[str, Any]] = []
+    verified_heads: list[tuple[dict[str, Any], Any, Any]] = []
+    for index, head in enumerate(heads):
+        head = head if isinstance(head, dict) else {}
+        ok, failed, head_summary = _verify_record(head)
+        ident = head.get("anchor_id") or f"#{index}"
+        period = f"{head.get('period_start')}..{head.get('period_end')}"
+        head_rows.append(
+            {
+                "anchor_id": head.get("anchor_id"),
+                "period_start": head.get("period_start"),
+                "period_end": head.get("period_end"),
+                "anchor_digest": head.get("anchor_digest"),
+                "verified": ok,
+                "tsa_gen_time": head_summary.get("tsa_gen_time"),
+                "failed_checks": failed,
+            }
+        )
+        if not ok:
+            failures.append(
+                f"anchor head {ident} ({period}) does not verify and is not used: "
+                f"{_what(head, failed)}"
+            )
+            continue
+        head_start = _parse_time(head.get("period_start"))
+        head_end = _parse_time(head.get("period_end"))
+        verified_heads.append((head, head_start, head_end))
+        known = [*exports, *([predecessor] if predecessor is not None else [])]
+        for other in known:
+            if (
+                head_start is not None
+                and _parse_time(other.get("period_start")) == head_start
+                and other.get("anchor_digest") != head.get("anchor_digest")
+            ):
+                failures.append(
+                    f"fork: anchor head {ident} and the package's anchor "
+                    f"{other.get('anchor_id')} both seal the period starting "
+                    f"{head.get('period_start')}, with different digests "
+                    f"({head.get('anchor_digest')} and {other.get('anchor_digest')})"
+                )
+
     # Classify each provenance entry of the package.
+    first_start = _parse_time(exports[0].get("period_start")) if exports else None
     sealed = []
     for export, row in zip(exports, rows, strict=True):
         start = _parse_time(export.get("period_start"))
@@ -663,6 +822,8 @@ def check_provenance_anchoring(
         "anchor_unverified": 0,
     }
     missing_named: list[str] = []
+    front_missing: list[str] = []
+    tail_missing: dict[int, tuple[dict[str, Any], list[str]]] = {}
     uncovered_named: list[str] = []
     for entry in entries or []:
         h = entry.get("entry_hash")
@@ -742,6 +903,23 @@ def check_provenance_anchoring(
                     reason=f"its period was sealed under {row['schema']}, which predates "
                     "provenance anchoring",
                 )
+            elif (
+                predecessor_v3 and ts is not None and first_start is not None
+                and ts < first_start
+            ):
+                # AG6-CONTRACTS section 4, P2: the anchor before the run is v3,
+                # so anchoring had already begun and the run starts too late.
+                item.update(
+                    status="missing",
+                    anchor_id=predecessor_row["anchor_id"] if predecessor_row else None,
+                    reason=(
+                        "before the first anchor's period, but the anchor before the run "
+                        f"({predecessor_row['anchor_id'] if predecessor_row else None}) is "
+                        f"{_ANCHOR_V3}: anchoring had already begun, so the run should "
+                        "have started earlier"
+                    ),
+                )
+                front_missing.append(f"{entry.get('id')!r} (at {entry.get('timestamp')})")
             elif chained and ts is not None:
                 item.update(
                     status="unanchored",
@@ -756,6 +934,28 @@ def check_provenance_anchoring(
                     else "its timestamp is unreadable",
                 )
                 uncovered_named.append(repr(entry.get("id")))
+        if item["status"] == "not_yet_anchored" and ts is not None:
+            # AG6-CONTRACTS section 4, H3: a verified head proves this time was
+            # sealed, so an entry older than its period end must be anchored.
+            covering_heads = sorted(
+                (h for h in verified_heads if h[2] is not None and ts < h[2]),
+                key=lambda h: h[2],
+            )
+            if covering_heads:
+                head, head_start, _ = covering_heads[0]
+                where = (
+                    f"{head.get('anchor_id')} "
+                    f"({head.get('period_start')}..{head.get('period_end')})"
+                )
+                if head_start is not None and ts < head_start:
+                    reason = (
+                        f"sealed before anchor {where}, by an anchor the package does not "
+                        "carry"
+                    )
+                else:
+                    reason = f"sealed by anchor {where}, which the package does not carry"
+                item.update(status="missing", anchor_id=head.get("anchor_id"), reason=reason)
+                tail_missing.setdefault(id(head), (head, []))[1].append(repr(entry.get("id")))
         counts[item["status"]] += 1
         classified.append(item)
 
@@ -774,7 +974,39 @@ def check_provenance_anchoring(
                 "chain_breaks": breaks,
             }
         )
+    if with_predecessor or heads:
+        report.provenance_anchoring.update(
+            {"heads": head_rows, "head_note": None if heads else NO_HEAD_NOTE}
+        )
+    if with_predecessor:
+        report.provenance_anchoring["predecessor"] = predecessor_row
 
+    if front_missing:
+        failures.append(
+            f"{len(front_missing)} provenance entr"
+            f"{'y is' if len(front_missing) == 1 else 'ies are'} older than the run, but the "
+            f"anchor before it ({predecessor_row['anchor_id'] if predecessor_row else None}) "
+            f"is {_ANCHOR_V3}, so anchoring had already begun and the anchors sealing them "
+            f"were left out: {_named(front_missing)}"
+        )
+    created = _parse_time(manifest.get("created_at"))
+    for head, names in tail_missing.values():
+        sealed_time = _parse_time(
+            (head.get("tsa") or {}).get("gen_time") if isinstance(head.get("tsa"), dict) else None
+        ) or _parse_time(head.get("sealed_at"))
+        hint = ""
+        if created is not None and sealed_time is not None and sealed_time > created:
+            hint = (
+                " (this head was sealed after the package was created, so the package may "
+                "simply predate it: export a fresh package and verify it against this head)"
+            )
+        failures.append(
+            f"{len(names)} provenance entr{'y' if len(names) == 1 else 'ies'} older than "
+            f"the end of anchor head {head.get('anchor_id')} ({head.get('period_start')}.."
+            f"{head.get('period_end')}) {'is' if len(names) == 1 else 'are'} not anchored in "
+            "the package: the anchors sealing them exist but the package does not carry "
+            f"them, so its run stops short of the head{hint}: {_named(names)}"
+        )
     if missing_named:
         failures.append(
             f"{len(missing_named)} provenance entr"
@@ -816,6 +1048,26 @@ def check_provenance_anchoring(
             "; event checks skipped on provenance-only anchor records (the package's own "
             "events are covered by its Merkle root and signatures)"
         )
+    if with_predecessor:
+        if predecessor_row is not None:
+            detail += (
+                f"; the run follows predecessor {predecessor_row['anchor_id']} "
+                f"({predecessor_row['schema']}), verified as a header-only record"
+            )
+        else:
+            detail += "; the run starts the anchor chain (no predecessor)"
+    if verified_heads:
+        newest = max(
+            verified_heads, key=lambda h: h[2] or datetime.min.replace(tzinfo=UTC)
+        )[0]
+        detail += (
+            f"; {len(verified_heads)} independent anchor head(s) verified, the newest "
+            f"{newest.get('anchor_id')} "
+            f"({newest.get('period_start')}..{newest.get('period_end')}), "
+            "so no older entry may read as not yet anchored"
+        )
+    elif with_predecessor:
+        detail += f"; {NO_HEAD_NOTE}"
     if uncovered_named:
         report.add_warn(
             check_id,

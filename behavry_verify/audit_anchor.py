@@ -58,6 +58,8 @@ __all__ = [
     "ANCHOR_SCHEMA_V2",
     "ANCHOR_SCHEMA_V3",
     "EVENT_CHECKS_SKIPPED_REASON",
+    "HEADER_CHECKS_SKIPPED_REASON",
+    "RECORDS_HEADER",
     "RECORDS_PROVENANCE",
     "anchor_provenance_hashes",
     "canonical_anchor_bytes",
@@ -83,6 +85,17 @@ RECORDS_PROVENANCE = "provenance"
 EVENT_CHECKS_SKIPPED_REASON = (
     "event records are not carried; the package's own events are covered by its "
     "Merkle root and signatures"
+)
+
+#: AG-6: an export carrying ``records: "header"`` holds the signed fields and
+#: no records at all, neither events nor provenance (AG6-CONTRACTS section 1).
+#: It is what ``/anchors/head`` and ``/anchors/{id}/header`` return, and the
+#: form of a package 1.6 ``predecessor``.
+RECORDS_HEADER = "header"
+#: The reason AG6-CONTRACTS section 1 gives, verbatim.
+HEADER_CHECKS_SKIPPED_REASON = (
+    "header-only record: the signed bytes are verified, the records they commit to "
+    "are not carried"
 )
 
 _KNOWN_SCHEMAS = frozenset({ANCHOR_SCHEMA_V1, ANCHOR_SCHEMA_V2, ANCHOR_SCHEMA_V3})
@@ -206,9 +219,23 @@ def verify_audit_anchor(
     )
     records_kind = export.get("records")
     provenance_only = records_kind == RECORDS_PROVENANCE
+    header_only = records_kind == RECORDS_HEADER
     if records_kind is not None:
         summary["records"] = records_kind
-    if provenance_only and schema != ANCHOR_SCHEMA_V3:
+    if header_only:
+        # AG6-CONTRACTS section 1: defined for every schema, since the head and
+        # a package's predecessor may be v1, v2 or v3. Records it should not
+        # carry are not checked: checking them would turn a header into a
+        # partial full record whose other half is unverified.
+        carried = [k for k in ("events", "provenance") if export.get(k) is not None]
+        if carried:
+            report.add_warn(
+                "anchor_format",
+                "Anchor readable",
+                f"a header-only record carries {' and '.join(carried)}; they are ignored, "
+                "and only the signed bytes are verified",
+            )
+    elif provenance_only and schema != ANCHOR_SCHEMA_V3:
         report.add_fail(
             "anchor_format",
             "Anchor readable",
@@ -235,13 +262,19 @@ def verify_audit_anchor(
     # "provenance"``) carries no events, so these are SKIPPED, never passed.
     # The event fields still count: they are inside the signed bytes, so the
     # digest and signature below still cover them.
-    if provenance_only:
+    #
+    # A header-only record (AG6-CONTRACTS section 1) carries no records of
+    # either kind, so the event and provenance record checks are all SKIPPED
+    # with the contract's reason, and the digest, signature and TSA token are
+    # what it proves.
+    if header_only or provenance_only:
+        reason = HEADER_CHECKS_SKIPPED_REASON if header_only else EVENT_CHECKS_SKIPPED_REASON
         for check_id, check_label in (
             ("merkle_root", "Merkle root matches"),
             ("event_count", "Event count verified"),
             ("boundary_hashes", "First and last event hashes match"),
         ):
-            report.add_skip(check_id, check_label, EVENT_CHECKS_SKIPPED_REASON)
+            report.add_skip(check_id, check_label, reason)
     elif events is None:
         report.add_fail(
             "merkle_root",
@@ -349,7 +382,11 @@ def verify_audit_anchor(
     # The anchor record omits tenant_id per event (it is a property of the
     # anchor), but the signed tuple includes it, so it is supplied here.
     signed = [e for e in (events or []) if e.get("signature")]
-    if provenance_only:
+    if header_only:
+        report.add_skip(
+            "event_signatures", "Event signatures valid", HEADER_CHECKS_SKIPPED_REASON
+        )
+    elif provenance_only:
         report.add_skip(
             "event_signatures", "Event signatures valid", EVENT_CHECKS_SKIPPED_REASON
         )
@@ -390,7 +427,17 @@ def verify_audit_anchor(
             )
 
     # -- 4b. Provenance (v3) ---------------------------------------------------
-    if schema == ANCHOR_SCHEMA_V3:
+    if schema == ANCHOR_SCHEMA_V3 and header_only:
+        summary["provenance_count"] = export.get("provenance_count")
+        summary["provenance_root"] = export.get("provenance_root")
+        for check_id, check_label in (
+            ("provenance_root", "Provenance root matches"),
+            ("provenance_count", "Provenance count verified"),
+            ("provenance_boundary_hashes", "First and last provenance hashes match"),
+            ("provenance_signatures", "Provenance record signatures valid"),
+        ):
+            report.add_skip(check_id, check_label, HEADER_CHECKS_SKIPPED_REASON)
+    elif schema == ANCHOR_SCHEMA_V3:
         _check_provenance(report, export, anchor, raw_public_key)
 
     # -- 5 to 7. The RFC 3161 token ---------------------------------------------

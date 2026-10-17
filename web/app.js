@@ -60,6 +60,7 @@
 
   var observersInput = document.getElementById("observers");
   var tsaRootsInput = document.getElementById("tsa-roots");
+  var headsInput = document.getElementById("anchor-heads");
   var anchorForm = document.getElementById("anchor-form");
   var auditAnchorInput = document.getElementById("audit-anchor");
   var anchorTrustInput = document.getElementById("anchor-trust");
@@ -117,6 +118,10 @@
     // Observer key files go up as files, one observer_anchor field each.
     Array.prototype.forEach.call(observersInput.files || [], function (observer) {
       body.append("observer_anchor", observer);
+    });
+    // Anchor heads (AG-6) go up as files too, one anchor_head field each.
+    Array.prototype.forEach.call(headsInput.files || [], function (head) {
+      body.append("anchor_head", head);
     });
     Promise.all([readText(anchorInput), readText(tsaRootsInput)])
       .then(function (texts) {
@@ -204,10 +209,14 @@
           " (" + anchoring.anchor_count + " anchor" + (anchoring.anchor_count === 1 ? "" : "s") + ")"
         : null],
       ["Records carried", anchorSummary.records === "provenance"
-        ? "provenance only (event checks skipped)" : null],
+        ? "provenance only (event checks skipped)"
+        : anchorSummary.records === "header"
+          ? "header only (record checks skipped)" : null],
       ["Anchor chain", anchoring && anchoring.chain_unbroken !== undefined
         ? (anchoring.chain_unbroken ? "unbroken" : "BROKEN: an anchor is missing")
         : null],
+      ["Run predecessor", predecessorLine(anchoring)],
+      ["Anchor heads", headsLine(anchoring)],
       ["Verified at", report.verified_at],
     ].forEach(function (pair) {
       if (pair[1] === null || pair[1] === undefined || pair[1] === "") return;
@@ -237,6 +246,14 @@
         "record, so its events are not carried and the event checks were skipped."
       );
     }
+    if (report.verified && report.kind === "audit_anchor" &&
+        (report.anchor_summary || {}).records === "header") {
+      return (
+        "Every check that applies passed. This header is exactly what was sealed: its " +
+        "digest, signature and timestamp are verified. It carries no records, so the " +
+        "event and provenance record checks were skipped."
+      );
+    }
     if (report.verified && report.kind === "audit_anchor") {
       return (
         "Every check passed. This anchor is exactly what was sealed, and its " +
@@ -257,6 +274,24 @@
     return failed.length === 1
       ? "One check failed: " + failed[0].label.toLowerCase() + "."
       : failed.length + " checks failed. See below.";
+  }
+
+  function predecessorLine(anchoring) {
+    if (!anchoring || !("predecessor" in anchoring)) return null;
+    var pred = anchoring.predecessor;
+    if (!pred) return "none (the run starts the anchor chain)";
+    return pred.anchor_id + " (" + pred.schema + "), " +
+      (pred.verified ? "verified" : "NOT VERIFIED");
+  }
+
+  function headsLine(anchoring) {
+    if (!anchoring || !("heads" in anchoring)) return null;
+    if (anchoring.head_note) return anchoring.head_note;
+    return (anchoring.heads || []).map(function (head) {
+      return head.anchor_id + " (" + head.period_start + " to " + head.period_end + "), " +
+        (head.verified ? "verified"
+          : "NOT VERIFIED, not used: " + (head.failed_checks || []).join(", "));
+    }).join("; ");
   }
 
   function signerLine(report) {

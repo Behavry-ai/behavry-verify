@@ -126,6 +126,24 @@ async def _parse_observer_files(uploads: list[UploadFile] | None) -> list[dict[s
     return out
 
 
+async def _parse_anchor_heads(uploads: list[UploadFile] | None) -> list[dict[str, Any]]:
+    """Anchor head files (AG-6), one record each, as the CLI's ``--anchor-head``."""
+    out: list[dict[str, Any]] = []
+    for upload in uploads or []:
+        data = await _read_upload(upload)
+        if not data.strip():
+            continue
+        name = upload.filename or "anchor head"
+        try:
+            value = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HTTPException(400, f"{name} is not valid JSON: {exc}") from exc
+        if not isinstance(value, dict):
+            raise HTTPException(400, f"{name}: an anchor head must be a JSON object")
+        out.append(value)
+    return out
+
+
 def _parse_tsa_roots(raw: str | None) -> list[Any] | None:
     if not raw or not raw.strip():
         return None
@@ -167,6 +185,7 @@ def _verify(
     anchor: dict[str, Any] | None,
     observer_anchors: list[dict[str, Any]] | None = None,
     tsa_roots: list[Any] | None = None,
+    anchor_heads: list[dict[str, Any]] | None = None,
 ) -> VerificationReport:
     try:
         components = load_package_from_bytes(data)
@@ -179,6 +198,7 @@ def _verify(
         trust_source=source,
         observer_anchors=observer_anchors,
         tsa_roots=tsa_roots,
+        anchor_heads=anchor_heads,
     )
     if source is TrustSource.NONE and report.error is None:
         report.error = (
@@ -199,6 +219,7 @@ async def verify_endpoint(
     observer_anchors: Annotated[str | None, Form()] = None,
     observer_anchor: Annotated[list[UploadFile] | None, File()] = None,
     tsa_roots: Annotated[str | None, Form()] = None,
+    anchor_head: Annotated[list[UploadFile] | None, File()] = None,
 ) -> JSONResponse:
     """Verify an evidence package supplied as an upload or by URL.
 
@@ -211,6 +232,9 @@ async def verify_endpoint(
     each, as the CLI's ``--observer-anchor``); both sources are combined.
     ``tsa_roots`` is the PEM text of TSA roots the caller trusts, for the audit
     anchors a 1.4 authority package carries (check 15).
+    ``anchor_head`` is repeatable: anchor records the caller obtained from the
+    tenant independently of the package (``GET /api/v1/audit/anchors/head``),
+    as the CLI's ``--anchor-head``.
     """
     if package is None and not package_url:
         raise HTTPException(400, "supply either a package file or a package_url")
@@ -221,6 +245,7 @@ async def verify_endpoint(
     observers = _parse_observer_anchors(observer_anchors)
     observers.extend(await _parse_observer_files(observer_anchor))
     roots = _parse_tsa_roots(tsa_roots)
+    heads = await _parse_anchor_heads(anchor_head)
 
     if package is not None:
         data = await _read_upload(package)
@@ -230,7 +255,7 @@ async def verify_endpoint(
         except FetchError as exc:
             raise HTTPException(400, str(exc)) from exc
 
-    report = _verify(data, anchor, observers, roots)
+    report = _verify(data, anchor, observers, roots, heads)
     # A failed verification is a successful request: the caller asked a
     # question and got a definitive answer. Only malformed input is a 4xx.
     return JSONResponse(report.to_dict())
@@ -243,6 +268,7 @@ async def verify_text_endpoint(
     observer_anchors: Annotated[str | None, Form()] = None,
     observer_anchor: Annotated[list[UploadFile] | None, File()] = None,
     tsa_roots: Annotated[str | None, Form()] = None,
+    anchor_head: Annotated[list[UploadFile] | None, File()] = None,
 ) -> PlainTextResponse:
     """Same verification, rendered as the plain-text report (for CI use)."""
     if package is None:
@@ -254,6 +280,7 @@ async def verify_text_endpoint(
         _parse_anchor(trust_anchor),
         observers,
         _parse_tsa_roots(tsa_roots),
+        await _parse_anchor_heads(anchor_head),
     )
     return PlainTextResponse(
         report.to_text(), status_code=200 if report.verified else 422

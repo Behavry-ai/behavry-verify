@@ -21,6 +21,7 @@ observer key).
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import io
 import json
@@ -983,8 +984,12 @@ class AnchoredAuthorityPackageBuilder(AuthorityPackageBuilder):
             k: v for k, v in built.items()
             if k not in ("manifest.json", "signature.json", "verification_metadata.json")
         }
-        data["anchors.json"] = {"anchors": self.anchors}
+        data["anchors.json"] = self.anchors_file()
         return self.assemble(base, data)
+
+    def anchors_file(self) -> dict[str, Any]:
+        """The body of ``anchors.json`` (1.6 adds the run's predecessor)."""
+        return {"anchors": self.anchors}
 
 
 @pytest.fixture
@@ -1038,7 +1043,7 @@ class ChainedAuthorityPackageBuilder(AnchoredAuthorityPackageBuilder):
         ]
         self.foreign_entries = [self._foreign_entry(base + timedelta(minutes=2, seconds=30))]
         anchors: list[dict[str, Any]] = []
-        previous: str | None = None
+        previous: str | None = self.chain_start_digest()
         for start, end in self.periods:
             sealed = self.seal_anchor(
                 start, end, self.tenant_entries_in(start, end), previous, provenance_only=True
@@ -1046,6 +1051,10 @@ class ChainedAuthorityPackageBuilder(AnchoredAuthorityPackageBuilder):
             anchors.append(sealed)
             previous = sealed["anchor_digest"]
         return anchors
+
+    def chain_start_digest(self) -> str | None:
+        """The first run anchor's ``previous_anchor_digest`` (None: it starts the chain)."""
+        return None
 
     def tenant_entries_in(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
         """Every provenance entry of the tenant in the period, ordered (timestamp, id)."""
@@ -1087,3 +1096,163 @@ class ChainedAuthorityPackageBuilder(AnchoredAuthorityPackageBuilder):
 @pytest.fixture
 def chained_builder() -> ChainedAuthorityPackageBuilder:
     return ChainedAuthorityPackageBuilder()
+
+
+# ---------------------------------------------------------------------------
+# Authority evidence package 1.6: the run's predecessor and anchor heads (AG-6)
+# ---------------------------------------------------------------------------
+
+ANCHOR_V2 = "behavry.audit_anchor.v2"
+
+
+def canonical_anchor_any_bytes(anchor: dict[str, Any]) -> bytes:
+    """AG4-CONTRACTS section 1 for v2 or v3, written out independently."""
+    if anchor["schema"] == ANCHOR_V3:
+        return canonical_anchor_v3_bytes(anchor)
+    payload = {
+        "schema": anchor["schema"],
+        "tenant_id": anchor["tenant_id"] or "",
+        "period_start": anchor["period_start"],
+        "period_end": anchor["period_end"],
+        "event_count": anchor["event_count"],
+        "merkle_root": anchor["merkle_root"],
+        "first_event_hash": anchor["first_event_hash"] or "",
+        "last_event_hash": anchor["last_event_hash"] or "",
+        "previous_anchor_digest": anchor["previous_anchor_digest"] or "",
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+
+
+def header_only(export: dict[str, Any]) -> dict[str, Any]:
+    """AG6-CONTRACTS section 1: the same anchor with its records removed.
+
+    Nothing inside the signed bytes changes, so the digest, signature and TSA
+    token of the full export still hold.
+    """
+    header = {k: copy.deepcopy(v) for k, v in export.items() if k not in ("events", "provenance")}
+    header["records"] = "header"
+    return header
+
+
+class PredecessorAuthorityPackageBuilder(ChainedAuthorityPackageBuilder):
+    """A 1.6 authority package: the 1.5 run, its predecessor, and later anchors.
+
+    The run is the four anchors of :class:`ChainedAuthorityPackageBuilder`
+    (or ``periods``). The four minutes before the run's first period are
+    sealed first, under ``predecessor_schema``, and the first run anchor
+    points at it, so ``anchors.json`` carries it as the header-only
+    ``predecessor``. ``predecessor_schema=None`` makes the first run anchor
+    start the chain, with no predecessor.
+
+    :meth:`seal_after` seals anchors the tenant sealed after the run, which a
+    verifying party can obtain as heads.
+    """
+
+    authority_version = "1.6"
+
+    def __init__(
+        self,
+        *,
+        tsa: Any | None = None,
+        periods: list[tuple[datetime, datetime]] | None = None,
+        predecessor_schema: str | None = ANCHOR_V3,
+    ) -> None:
+        self.predecessor_schema = predecessor_schema
+        self.predecessor: dict[str, Any] | None = None
+        super().__init__(tsa=tsa, periods=periods)
+
+    def chain_start_digest(self) -> str | None:
+        if self.predecessor_schema is None:
+            return None
+        start = self.periods[0][0]
+        self.predecessor = header_only(
+            self.seal_record(start - timedelta(minutes=4), start, None, self.predecessor_schema)
+        )
+        return self.predecessor["anchor_digest"]
+
+    def seal_record(
+        self,
+        start: datetime,
+        end: datetime,
+        previous_anchor_digest: str | None,
+        schema: str = ANCHOR_V3,
+    ) -> dict[str, Any]:
+        """A sealed anchor of any chained schema, as a provenance-only (v3) or bare record."""
+        if schema == ANCHOR_V3:
+            return self.seal_anchor(
+                start, end, self.tenant_entries_in(start, end), previous_anchor_digest,
+                provenance_only=True,
+            )
+        record: dict[str, Any] = {
+            "schema": schema,
+            "content_policy": "Tamper-evidence layer only.",
+            "anchor_id": f"anchor-{start.strftime('%H%M')}",
+            "tenant_id": self.tenant_id,
+            "period_start": start.isoformat(timespec="microseconds"),
+            "period_end": end.isoformat(timespec="microseconds"),
+            "event_count": 0,
+            "merkle_root": merkle_root([]),
+            "first_event_hash": None,
+            "last_event_hash": None,
+            "previous_anchor_digest": previous_anchor_digest,
+            "signer_kid": self.kid,
+            "signing_algorithm": "ed25519",
+            "signing_backend": "internal",
+            "sealed_at": (end + timedelta(seconds=4)).isoformat(timespec="microseconds"),
+            "events": [],
+        }
+        return self.reseal(record)
+
+    def reseal(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Recompute the digest, Behavry signature and TSA token of a record, in place.
+
+        What the key holder can do to any record it edits; the TSA here is the
+        test authority, so the token is fresh too.
+        """
+        canonical = canonical_anchor_any_bytes(record)
+        digest = hashlib.sha256(canonical).digest()
+        gen_time = datetime.fromisoformat(record["period_end"]) + timedelta(seconds=3)
+        token, serial = self.tsa.stamp(digest, gen_time)
+        record.update(
+            {
+                "anchor_digest": digest.hex(),
+                "signature": base64.b64encode(self.private_key.sign(canonical)).decode("ascii"),
+                "tsa": {
+                    "status": "granted",
+                    "url": "https://tsa.example.test/tsr",
+                    "gen_time": gen_time.isoformat(timespec="microseconds"),
+                    "policy": "1.3.6.1.4.1.13762.3",
+                    "serial_number": str(serial),
+                    "token_der_b64": base64.b64encode(token).decode("ascii"),
+                },
+            }
+        )
+        return record
+
+    def seal_after(self, count: int = 1, minutes: int = 4) -> list[dict[str, Any]]:
+        """``count`` anchors sealed after the run, chained to its last anchor."""
+        sealed: list[dict[str, Any]] = []
+        last = self.anchors[-1]
+        for _ in range(count):
+            start = datetime.fromisoformat(last["period_end"])
+            end = start + timedelta(minutes=minutes)
+            last = self.seal_record(start, end, last["anchor_digest"])
+            sealed.append(last)
+        return sealed
+
+    def anchors_file(self) -> dict[str, Any]:
+        return {"anchors": self.anchors, "predecessor": self.predecessor}
+
+    def extra_manifest(self, data_files: dict[str, Any]) -> dict[str, Any]:
+        predecessor = data_files.get("anchors.json", {}).get("predecessor")
+        return {
+            "anchor_predecessor_digest": predecessor["anchor_digest"] if predecessor else None,
+            **super().extra_manifest(data_files),
+        }
+
+
+@pytest.fixture
+def predecessor_builder() -> PredecessorAuthorityPackageBuilder:
+    return PredecessorAuthorityPackageBuilder()
