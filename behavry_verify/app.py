@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from behavry_verify import __version__
 from behavry_verify.anchor import AnchorError, validate_anchor, validate_observer_anchors
-from behavry_verify.audit_anchor import verify_audit_anchor
+from behavry_verify.audit_anchor import load_anchor_record_bytes, verify_audit_anchor
 from behavry_verify.fetch import FetchError, fetch_package
 from behavry_verify.package import (
     PackageError,
@@ -135,12 +135,10 @@ async def _parse_anchor_heads(uploads: list[UploadFile] | None) -> list[dict[str
             continue
         name = upload.filename or "anchor head"
         try:
-            value = json.loads(data.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise HTTPException(400, f"{name} is not valid JSON: {exc}") from exc
-        if not isinstance(value, dict):
-            raise HTTPException(400, f"{name}: an anchor head must be a JSON object")
-        out.append(value)
+            # AG-7: JSON or gzipped JSON, told apart by content.
+            out.append(load_anchor_record_bytes(data))
+        except ValueError as exc:
+            raise HTTPException(400, f"{name}: {exc}") from exc
     return out
 
 
@@ -234,7 +232,7 @@ async def verify_endpoint(
     anchors a 1.4 authority package carries (check 15).
     ``anchor_head`` is repeatable: anchor records the caller obtained from the
     tenant independently of the package (``GET /api/v1/audit/anchors/head``),
-    as the CLI's ``--anchor-head``.
+    as the CLI's ``--anchor-head``, each as JSON or gzipped JSON (decompressed here).
     """
     if package is None and not package_url:
         raise HTTPException(400, "supply either a package file or a package_url")

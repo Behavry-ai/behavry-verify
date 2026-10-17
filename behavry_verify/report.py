@@ -293,12 +293,21 @@ class VerificationReport:
                         "verified" if pred.get("verified") else "NOT VERIFIED"
                     )
                 lines.append(f"  {'Run predecessor'.ljust(width)}  {line}")
-            for head in pa.get("heads") or []:
+            forks = pa.get("forks") or []
+            for index, head in enumerate(pa.get("heads") or []):
                 state = (
                     "verified"
                     if head.get("verified")
                     else "NOT VERIFIED, not used: " + ", ".join(head.get("failed_checks") or [])
                 )
+                # AG7-CONTRACTS section 3: name each anchor the head contradicts.
+                against = [
+                    fork_against(fork, index)
+                    for fork in forks
+                    if index in (fork.get("head_index"), fork.get("other_head_index"))
+                ]
+                if against:
+                    state += ", FORK: contradicts " + "; ".join(against)
                 lines.append(
                     f"  {'Anchor head'.ljust(width)}  {head.get('anchor_id')} "
                     f"({head.get('period_start')}..{head.get('period_end')}), {state}"
@@ -321,3 +330,25 @@ class VerificationReport:
         if self.signing_backend:
             parts.append(f"via {self.signing_backend}")
         return " ".join(parts)
+
+
+_FORK_KIND = {
+    "run": "run anchor",
+    "predecessor": "run predecessor",
+    "head": "anchor head",
+}
+
+
+def fork_against(fork: dict[str, Any], index: int) -> str:
+    """The anchor a fork row says head ``index`` contradicts, as text."""
+    if fork.get("against") == "head" and fork.get("head_index") != index:
+        # This head is the earlier one of the pair: name the later head.
+        return (
+            f"anchor head {fork.get('head_anchor_id')} "
+            f"({fork.get('head_period_start')}..{fork.get('head_period_end')})"
+        )
+    kind = _FORK_KIND.get(str(fork.get("against")), "anchor")
+    return (
+        f"{kind} {fork.get('anchor_id')} "
+        f"({fork.get('anchor_period_start')}..{fork.get('anchor_period_end')})"
+    )

@@ -25,7 +25,9 @@ missing from the set.
 ``--anchor-head`` is repeatable too: each is an anchor record obtained from the
 tenant independently of the package (``GET /api/v1/audit/anchors/head``), and
 every provenance entry older than a verified head's period must be anchored in
-the package. Without one, dropping the newest anchors cannot be ruled out.
+the package. A head file is a `.json` record or a gzipped `.json.gz` object
+as the WORM bucket stores it, told apart by content. Without one, dropping the
+newest anchors cannot be ruled out.
 
 Exit codes:
     0  verified
@@ -43,7 +45,11 @@ from pathlib import Path
 
 from behavry_verify import __version__
 from behavry_verify.anchor import AnchorError, validate_anchor, validate_observer_anchors
-from behavry_verify.audit_anchor import verify_anchor_chain, verify_audit_anchor
+from behavry_verify.audit_anchor import (
+    load_anchor_record_bytes,
+    verify_anchor_chain,
+    verify_audit_anchor,
+)
 from behavry_verify.package import PackageError, load_package_from_path, verify_package
 from behavry_verify.report import TrustSource, VerificationReport
 from behavry_verify.rfc3161 import load_pem_certificates
@@ -124,7 +130,8 @@ def build_parser() -> argparse.ArgumentParser:
             "An anchor record obtained independently of the package, such as the "
             "tenant's head (GET /api/v1/audit/anchors/head). Repeatable, --package "
             "only. Every provenance entry older than a verified head's period must "
-            "be anchored in the package, which rules out dropping the newest anchors."
+            "be anchored in the package, which rules out dropping the newest anchors. "
+            "A .json record or a gzipped .json.gz object as the WORM bucket stores it."
         ),
     )
     parser.add_argument(
@@ -187,12 +194,9 @@ def main(argv: list[str] | None = None) -> int:
     heads: list[dict] = []
     for path in args.anchor_head:
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            value = load_anchor_record_bytes(path.read_bytes())
+        except (OSError, ValueError) as exc:
             print(f"error: could not read anchor head {path}: {exc}", file=sys.stderr)
-            return EXIT_USAGE
-        if not isinstance(value, dict):
-            print(f"error: anchor head {path} is not a JSON object", file=sys.stderr)
             return EXIT_USAGE
         heads.append(value)
 

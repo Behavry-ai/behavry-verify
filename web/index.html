@@ -62,7 +62,7 @@
         one or more. Observations and assessment bundles signed by a key you do not
         supply are reported as not independently verified.
       </p>
-      <input type="file" id="observers" name="observers" accept=".json,application/json" multiple>
+      <input type="file" id="observers" name="observers" accept=".json,.gz,application/json,application/gzip" multiple>
     </div>
 
     <div class="field">
@@ -82,8 +82,10 @@
         (<code>/api/v1/audit/anchors/head</code>). Choose one or more. Every provenance
         entry older than a head must be anchored in the package, which rules out dropping
         the newest anchors. Without one, that truncation cannot be ruled out.
+        A head may be a <code>.json</code> record or a gzipped <code>.json.gz</code> object
+        straight from the WORM bucket.
       </p>
-      <input type="file" id="anchor-heads" name="anchor-heads" accept=".json,application/json" multiple>
+      <input type="file" id="anchor-heads" name="anchor-heads" accept=".json,.gz,application/json,application/gzip" multiple>
     </div>
 
     <button type="submit" id="submit">Verify package</button>

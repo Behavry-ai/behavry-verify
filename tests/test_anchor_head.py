@@ -17,6 +17,7 @@ See ``docs/strategy/AG6-CONTRACTS.md`` in the Behavry repo.
 from __future__ import annotations
 
 import copy
+import gzip
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -25,7 +26,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from behavry_verify.app import app
-from behavry_verify.audit_anchor import HEADER_CHECKS_SKIPPED_REASON, verify_audit_anchor
+from behavry_verify.audit_anchor import (
+    HEADER_CHECKS_SKIPPED_REASON,
+    load_anchor_record_bytes,
+    verify_audit_anchor,
+)
 from behavry_verify.authority import NO_HEAD_NOTE
 from behavry_verify.cli import main
 from behavry_verify.package import load_package_from_bytes, verify_package
@@ -653,3 +658,244 @@ def test_head_newer_than_the_package_says_it_may_simply_predate_it():
     fresh = _detail(_verify(builder, builder.components(), heads=[newest]), "provenance_anchoring")
     assert "run stops short of the head" in fresh
     assert "predate" not in fresh
+
+
+# ---------------------------------------------------------------------------
+# AG-7: H2 in its overlap form, and gzipped head files
+# ---------------------------------------------------------------------------
+
+
+def _at(hhmm: str) -> datetime:
+    hours, minutes = (int(part) for part in hhmm.split(":"))
+    return BASE.replace(hour=hours, minute=minutes)
+
+
+def _worm_gz(record: dict[str, Any]) -> bytes:
+    """A record as Behavry's WORM bucket stores it: canonical JSON, gzip mtime=0."""
+    body = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return gzip.compress(body, mtime=0)
+
+
+def test_shifted_fork_that_overlaps_run_anchors_fails(predecessor_builder):
+    """A key holder re-seals 11:05..11:09: validly signed and TSA-stamped, still a fork."""
+    run = predecessor_builder.anchors
+    fork = header_only(
+        predecessor_builder.seal_record(_at("11:05"), _at("11:09"), run[0]["anchor_digest"])
+    )
+    alone = _verify_record(fork, predecessor_builder)
+    assert alone.verified, alone.to_text()
+    for check_id in ("signature", "tsa_imprint", "tsa_signature", "tsa_chain"):
+        assert _status(alone, check_id) == "pass", check_id
+    # Not the AG-6 equal-start case: no run anchor starts at 11:05.
+    assert fork["period_start"] not in {a["period_start"] for a in run}
+
+    report = _verify(predecessor_builder, predecessor_builder.components(), heads=[fork])
+    assert not report.verified
+    assert _status(report, "provenance_anchoring") == "fail"
+    pa = report.provenance_anchoring
+    row = pa["heads"][0]
+    assert row["verified"] is True and row["failed_checks"] == ["fork"]
+    assert [(f["against"], f["anchor_id"]) for f in pa["forks"]] == [
+        ("run", "anchor-1104"), ("run", "anchor-1107"),
+    ]
+    first = pa["forks"][0]
+    assert first == {
+        "against": "run",
+        "head_index": 0,
+        "head_anchor_id": "anchor-1105",
+        "head_period_start": fork["period_start"],
+        "head_period_end": fork["period_end"],
+        "head_anchor_digest": fork["anchor_digest"],
+        "anchor_id": "anchor-1104",
+        "anchor_period_start": run[1]["period_start"],
+        "anchor_period_end": run[1]["period_end"],
+        "anchor_digest": run[1]["anchor_digest"],
+    }
+    detail = _detail(report, "provenance_anchoring")
+    assert "fork: anchor head anchor-1105" in detail
+    assert "contradicts the package's anchor anchor-1104" in detail
+    assert "contradicts the package's anchor anchor-1107" in detail
+    text = report.to_text()
+    assert "FORK: contradicts run anchor anchor-1104" in text
+    assert "run anchor anchor-1107" in text
+
+
+def test_fork_against_the_predecessor_fails(predecessor_builder):
+    """10:57..10:59 lies inside the predecessor (10:56..11:00) and touches no run anchor."""
+    fork = header_only(predecessor_builder.seal_record(_at("10:57"), _at("10:59"), None))
+    assert _verify_record(fork, predecessor_builder).verified
+    report = _verify(predecessor_builder, predecessor_builder.components(), heads=[fork])
+    assert not report.verified
+    pa = report.provenance_anchoring
+    assert [(f["against"], f["anchor_id"]) for f in pa["forks"]] == [
+        ("predecessor", "anchor-1056"),
+    ]
+    assert pa["heads"][0]["failed_checks"] == ["fork"]
+    assert "contradicts the run's predecessor anchor-1056" in _detail(
+        report, "provenance_anchoring"
+    )
+    assert "FORK: contradicts run predecessor anchor-1056" in report.to_text()
+
+
+def test_two_overlapping_heads_with_different_digests_fail(predecessor_builder):
+    """Both after the run, so neither contradicts the package, only each other."""
+    last = predecessor_builder.anchors[-1]["anchor_digest"]
+    one = header_only(predecessor_builder.seal_record(_at("11:15"), _at("11:19"), last))
+    two = header_only(predecessor_builder.seal_record(_at("11:17"), _at("11:21"), last))
+    report = _verify(predecessor_builder, predecessor_builder.components(), heads=[one, two])
+    assert not report.verified
+    pa = report.provenance_anchoring
+    assert [row["failed_checks"] for row in pa["heads"]] == [["fork"], ["fork"]]
+    assert len(pa["forks"]) == 1
+    fork = pa["forks"][0]
+    assert fork["against"] == "head"
+    assert (fork["head_index"], fork["other_head_index"]) == (1, 0)
+    assert (fork["head_anchor_id"], fork["anchor_id"]) == ("anchor-1117", "anchor-1115")
+    assert "contradicts anchor head anchor-1115" in _detail(report, "provenance_anchoring")
+    text = report.to_text()
+    assert "FORK: contradicts anchor head anchor-1117" in text  # on the first head's line
+    assert "FORK: contradicts anchor head anchor-1115" in text  # on the second's
+
+
+def test_the_same_head_twice_is_not_a_fork(predecessor_builder):
+    later = header_only(predecessor_builder.seal_after()[0])
+    report = _verify(
+        predecessor_builder, predecessor_builder.components(), heads=[later, copy.deepcopy(later)]
+    )
+    assert report.verified, report.to_text()
+    assert report.provenance_anchoring["forks"] == []
+
+
+def test_head_touching_an_anchor_at_a_boundary_is_not_a_fork(predecessor_builder):
+    """Periods are half-open: a head starting where an anchor ends does not overlap it."""
+    run = predecessor_builder.anchors
+    after = header_only(
+        predecessor_builder.seal_record(_at("11:15"), _at("11:19"), run[-1]["anchor_digest"])
+    )
+    assert after["period_start"] == run[-1]["period_end"]
+    before = header_only(predecessor_builder.seal_record(_at("10:52"), _at("10:56"), None))
+    assert before["period_end"] == predecessor_builder.predecessor["period_start"]
+    # And two heads that touch each other.
+    next_one = header_only(
+        predecessor_builder.seal_record(_at("11:19"), _at("11:23"), after["anchor_digest"])
+    )
+    report = _verify(
+        predecessor_builder, predecessor_builder.components(), heads=[after, before, next_one]
+    )
+    assert report.verified, report.to_text()
+    pa = report.provenance_anchoring
+    assert pa["forks"] == []
+    assert all(row["failed_checks"] == [] for row in pa["heads"])
+    assert "FORK" not in report.to_text()
+
+
+def test_report_without_a_head_carries_no_forks(predecessor_builder):
+    pa = _verify(predecessor_builder, predecessor_builder.components()).provenance_anchoring
+    assert "forks" not in pa
+
+
+@pytest.mark.parametrize("form", ["full", "header"])
+def test_gzipped_record_works_as_a_head(tmp_path, capsys, form):
+    builder, package, _, trust = _truncated(tmp_path)
+    newest = builder.seal_record(_at("11:11"), _at("11:15"), builder.anchors[-1]["anchor_digest"])
+    record = newest if form == "full" else header_only(newest)
+    assert ("provenance" in record) is (form == "full")
+    gz = tmp_path / "20261015T111100Z.json.gz"
+    gz.write_bytes(_worm_gz(record))
+    assert gz.read_bytes()[:2] == b"\x1f\x8b"
+    observers = tmp_path / "observers.json"
+    observers.write_text(json.dumps([builder.observer_anchor(), builder.minotaur_anchor()]))
+    base = ["--package", str(package), "--trust-anchor", str(trust),
+            "--observer-anchor", str(observers)]
+    assert main([*base, "--anchor-head", str(gz), "--json"]) == 1
+    body = json.loads(capsys.readouterr().out)
+    pa = body["provenance_anchoring"]
+    assert pa["heads"][0]["verified"] is True and pa["heads"][0]["failed_checks"] == []
+    assert "the package does not carry" in next(
+        c["detail"] for c in body["checks"] if c["id"] == "provenance_anchoring"
+    )
+    # A head equal to the run's last anchor, gzipped, is consistent.
+    whole = PredecessorAuthorityPackageBuilder()
+    head = whole.anchors[-1] if form == "full" else header_only(whole.anchors[-1])
+    own = tmp_path / "own.json.gz"
+    own.write_bytes(_worm_gz(head))
+    full_package = tmp_path / "whole.zip"
+    full_package.write_bytes(whole.zip_bytes())
+    trust.write_text(json.dumps(whole.anchor()))
+    observers.write_text(json.dumps([whole.observer_anchor(), whole.minotaur_anchor()]))
+    assert main(["--package", str(full_package), "--trust-anchor", str(trust),
+                 "--observer-anchor", str(observers), "--anchor-head", str(own)]) == 0
+    capsys.readouterr()
+
+
+def test_gz_head_with_a_bad_signature_fails_h1(tmp_path, capsys):
+    builder, package, head, trust = _truncated(tmp_path)
+    record = json.loads(head.read_text())
+    sig = record["signature"]
+    record["signature"] = ("A" if sig[0] != "A" else "B") + sig[1:]
+    gz = tmp_path / "bad.json.gz"
+    gz.write_bytes(_worm_gz(record))
+    assert main(["--package", str(package), "--trust-anchor", str(trust),
+                 "--anchor-head", str(gz), "--json"]) == 1
+    pa = json.loads(capsys.readouterr().out)["provenance_anchoring"]
+    row = pa["heads"][0]
+    assert row["verified"] is False and "signature" in row["failed_checks"]
+    assert pa["forks"] == []
+
+
+def test_head_form_is_detected_by_content_not_name(tmp_path):
+    record = header_only(PredecessorAuthorityPackageBuilder().anchors[-1])
+    assert load_anchor_record_bytes(_worm_gz(record)) == record
+    assert load_anchor_record_bytes(json.dumps(record).encode()) == record
+    # A misnamed file still loads, both ways round.
+    plain_named_gz = tmp_path / "head.json.gz"
+    plain_named_gz.write_text(json.dumps(record))
+    gz_named_json = tmp_path / "head.json"
+    gz_named_json.write_bytes(_worm_gz(record))
+    assert load_anchor_record_bytes(plain_named_gz.read_bytes()) == record
+    assert load_anchor_record_bytes(gz_named_json.read_bytes()) == record
+    for bad in (b"\x1f\x8bnot gzip", gzip.compress(b"[1, 2]"), gzip.compress(b"\xff\xfe")):
+        with pytest.raises(ValueError):
+            load_anchor_record_bytes(bad)
+
+
+def test_cli_rejects_a_corrupt_gz_head(tmp_path, capsys):
+    _, package, _, trust = _truncated(tmp_path)
+    bad = tmp_path / "bad.json.gz"
+    bad.write_bytes(gzip.compress(b"{nope", mtime=0))
+    assert main(["--package", str(package), "--trust-anchor", str(trust),
+                 "--anchor-head", str(bad)]) == 2
+    assert "could not read anchor head" in capsys.readouterr().err
+
+
+def test_api_and_web_upload_accept_gz_heads(tmp_path):
+    """The browser sends the file's bytes as they are; the server decompresses."""
+    builder, package, head, _ = _truncated(tmp_path)
+    gz = _worm_gz(json.loads(head.read_text()))
+    client = TestClient(app)
+    data = {
+        "trust_anchor": json.dumps(builder.anchor()),
+        "observer_anchors": json.dumps([builder.observer_anchor(), builder.minotaur_anchor()]),
+    }
+    files = [
+        ("package", ("authority.zip", package.read_bytes(), "application/zip")),
+        ("anchor_head", ("20261015T111100Z.json.gz", gz, "application/gzip")),
+    ]
+    body = client.post("/api/v1/verify", files=files, data=data).json()
+    assert body["verified"] is False
+    pa = body["provenance_anchoring"]
+    assert pa["heads"][0]["verified"] is True and pa["forks"] == []
+    text = client.post("/api/v1/verify.txt", files=files, data=data)
+    assert text.status_code == 422 and "the package does not carry" in text.text
+
+    bad = client.post(
+        "/api/v1/verify",
+        files=[files[0], ("anchor_head", ("bad.json.gz", b"\x1f\x8b\x08junk", "application/gzip"))],
+        data=data,
+    )
+    assert bad.status_code == 400 and "bad.json.gz" in bad.json()["detail"]
+
+    page = client.get("/").text
+    assert ".gz" in page and ".json.gz" in page
+    script = client.get("/static/app.js").text
+    assert "forks" in script and "FORK: contradicts" in script
