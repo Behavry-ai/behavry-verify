@@ -301,11 +301,9 @@ async def verify_anchor_endpoint(
     """
     data = await _read_upload(audit_anchor)
     try:
-        export = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise HTTPException(400, f"audit anchor is not valid JSON: {exc}") from exc
-    if not isinstance(export, dict):
-        raise HTTPException(400, "audit anchor must be a JSON object")
+        export = load_anchor_record_bytes(data)
+    except ValueError as exc:
+        raise HTTPException(400, f"audit anchor: {exc}") from exc
     anchor = _parse_anchor(trust_anchor)
     roots = _parse_tsa_roots(tsa_roots)
 
