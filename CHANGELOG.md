@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.8.0
+
+Sprint AG-8 (item L-2), following Behavry's `docs/strategy/AG8-CONTRACTS.md`
+section 3.
+
+### Added
+
+- **`behavry-verify collect-heads --base-url URL --out DIR [--token-env NAME]
+  [--since ISO] [--trust-anchor FILE] [--tsa-roots PEM]`.** Pages the tenant's
+  heads feed, `GET /api/v1/audit/anchors/heads?since=&limit=1000`, until a page
+  is empty, and saves each head as
+  `DIR/<YYYYmmddTHHMMSSZ of period_start>-<anchor_id[:8]>.json`. It resumes
+  after the newest head already in `DIR`, by the `period_start` inside the
+  files, unless `--since` is given. The bearer token is read from the
+  environment variable named by `--token-env` (default `BEHAVRY_TOKEN`), never
+  from the command line, and is never printed. With `--trust-anchor`, each
+  head is verified (digest, signature, TSA, and the TSA chain with
+  `--tsa-roots`) before it is saved; one that does not verify is not saved
+  and is reported. A stored file is never overwritten: one with different
+  content, or a stored head for the same `period_start` with another
+  `anchor_digest`, is reported as a conflict. Exit codes: 0 ok, 1 on any
+  conflict or unverified head, 2 on a usage, network or HTTP error. It uses
+  the standard library's `urllib` (proxy and CA settings from the
+  environment), so the CLI still depends on `cryptography` alone; it refuses
+  redirects, and accepts plain `http://` for a loopback host only.
+- **`--anchor-heads-dir DIR`**, repeatable, for `--package`: every `*.json` and
+  `*.json.gz` file directly in `DIR`, in name order, is loaded as an
+  `--anchor-head` and combined with any `--anchor-head`. Package verification
+  stays offline; only `collect-heads` uses the network.
+
+### Unchanged
+
+- Every existing invocation parses as before: `collect-heads` is recognized
+  only as the first argument.
+- The web upload and `POST /api/v1/verify` gain nothing: the repeatable
+  `anchor_head` field already takes any number of head files, and the service
+  never fetches heads on a caller's behalf.
+
 ## 0.7.0
 
 Sprint AG-7 (item K-4), following Behavry's `docs/strategy/AG7-CONTRACTS.md`

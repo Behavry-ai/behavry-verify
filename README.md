@@ -181,7 +181,7 @@ Package 1.5 proves nothing is missing inside the run, not that the run starts an
 
 A head file may be a `.json` record (header-only or full) or a gzipped `.json.gz` record, exactly as Behavry's WORM bucket stores `tenant/<id>/anchor/<period>.json.gz` and `tenant/<id>/head/<period>.json.gz`. The form is told apart by its content (the gzip magic number), not its file name, on the CLI, the API and the web page alike.
 
-A head covers only what was sealed when you obtained it. For the strongest statement, take a fresh head at verification time, or read the newest object in the tenant's WORM bucket yourself. A 1.6 report, or any report given a head, adds these keys to `provenance_anchoring` (`predecessor` is 1.6 only, and is null when the run starts the chain):
+A head covers only what was sealed when you obtained it. For the strongest statement, take a fresh head at verification time, or read the newest object in the tenant's WORM bucket yourself. Better still, keep every head as it is sealed: `behavry-verify collect-heads` (below) builds that collection, and `--anchor-heads-dir` passes all of it at once. A package that contradicts any head you already hold then fails, even if the tenant's feed later stops showing that head. A 1.6 report, or any report given a head, adds these keys to `provenance_anchoring` (`predecessor` is 1.6 only, and is null when the run starts the chain):
 
 ```json
 {
@@ -313,6 +313,13 @@ behavry-verify --package authority-agent-123.zip --trust-anchor anchor.json \
                --anchor-head 20261015T111100Z.json.gz   # straight from the WORM bucket
 ```
 
+A directory of heads, such as one kept by `collect-heads` (below): every `*.json` and `*.json.gz` file directly in it (not in subdirectories) is passed as an `--anchor-head`. It may repeat, and combines with `--anchor-head`. This reads files only: package verification never touches the network.
+
+```bash
+behavry-verify --package authority-agent-123.zip --trust-anchor anchor.json \
+               --observer-anchor minotaur-observer-key.json --anchor-heads-dir heads/
+```
+
 Audit anchor, optionally with your TSA roots. Repeat `--audit-anchor` to also walk a set for missing periods:
 
 ```bash
@@ -322,6 +329,29 @@ behavry-verify --audit-anchor behavry-anchor.json --trust-anchor anchor.json \
 behavry-verify --audit-anchor 2026-09-07T12.json --audit-anchor 2026-09-07T13.json \
                --trust-anchor anchor.json --json
 ```
+
+### Collecting heads (the one networked command)
+
+`collect-heads` keeps your own copy of a tenant's anchor heads. It pages the tenant's heads feed, `GET /api/v1/audit/anchors/heads?since=&limit=1000`, until a page comes back empty, and saves each head into a directory you then pass to `--anchor-heads-dir`. Run it on a schedule: each run resumes after the newest head already in the directory, read from `period_start` inside the files rather than their names, unless you pass `--since`.
+
+```bash
+export BEHAVRY_TOKEN=...        # never on the command line
+behavry-verify collect-heads --base-url https://behavry.example.com --out heads/ \
+               --trust-anchor behavry-trust-anchor.json
+```
+
+```
+behavry-verify collect-heads --base-url URL --out DIR [--token-env NAME]
+                             [--since ISO] [--trust-anchor FILE] [--tsa-roots PEM]
+```
+
+- Each head is saved as `DIR/<YYYYmmddTHHMMSSZ of period_start, UTC>-<first 8 characters of anchor_id>.json`. `DIR` is created if it does not exist.
+- The bearer token is read from the environment variable named by `--token-env` (default `BEHAVRY_TOKEN`). It is never accepted as an argument and never printed. Redirects are refused, so the token is only sent to `--base-url`, and plain `http://` is accepted only for a loopback host. The usual `HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE` and `SSL_CERT_DIR` settings apply.
+- With `--trust-anchor`, each head is verified before it is saved (digest, Behavry signature, RFC 3161 token, and the TSA chain if you add `--tsa-roots`), exactly as check 15 verifies a head. One that does not verify is not saved and is reported. Without `--trust-anchor`, heads are saved unchecked; `--anchor-heads-dir` still verifies each of them later.
+- A stored file is never overwritten. If the file for a head already exists with different content, or a stored head has the same `period_start` and a different `anchor_digest`, that is a **conflict**: two records for one period. It is reported and the new head is not saved. Files are compared by their parsed JSON, so reformatting one is not a conflict.
+- Exit codes: `0` when every head collected verified or was not checked, `1` on any conflict or unverified head, `2` on a usage, network or HTTP error.
+
+The collector trusts the feed for completeness: a feed that withholds a head hides it from you. What it cannot do is make a package verify that contradicts a head you already collected.
 
 ### API
 
@@ -335,7 +365,7 @@ curl -X POST https://verify.behavry.ai/api/v1/verify \
   -F anchor_head=@anchor-head.json                  # optional, repeatable file
 ```
 
-`anchor_head` is a file field too, and may repeat, like `--anchor-head`. It takes the same `.json` and `.json.gz` forms; the server decompresses a gzipped one. `POST /api/v1/verify.txt` takes it as well.
+`anchor_head` is a file field too, and may repeat, like `--anchor-head`. It takes the same `.json` and `.json.gz` forms; the server decompresses a gzipped one. `POST /api/v1/verify.txt` takes it as well. There is no directory field: to send a collected directory, repeat `anchor_head` once per file (for example `for f in heads/*.json; do args+=(-F "anchor_head=@$f"); done`). The service never fetches heads itself.
 
 `observer_anchor` is a file field and may repeat, one observer key file each, like `--observer-anchor`. The older `observer_anchors` field (JSON text of one anchor or a list) still works, and both are combined.
 
