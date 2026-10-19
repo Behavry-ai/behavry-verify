@@ -40,6 +40,15 @@ section 3.
   `anchor_head` field already takes any number of head files, and the service
   never fetches heads on a caller's behalf.
 
+### Fixed
+
+- **`--audit-anchor` reads WORM objects as stored.** A gzipped
+  `anchor/<period>.json.gz` or `head/<period>.json.gz` object used to stop
+  the CLI with a traceback; it now verifies as-is, detected by the gzip magic
+  number as `--anchor-head` already was. The web upload
+  (`POST /api/v1/verify-anchor`) accepts the same forms, and a file that is
+  neither JSON nor gzipped JSON is a usage error (exit 2, HTTP 400).
+
 ## 0.7.0
 
 Sprint AG-7 (item K-4), following Behavry's `docs/strategy/AG7-CONTRACTS.md`

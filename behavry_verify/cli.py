@@ -284,13 +284,11 @@ def _run_audit_anchors(
 ) -> int:
     exports: list[tuple[Path, dict]] = []
     for path in args.audit_anchor:
+        # AG-8: as stored in WORM too, so ``.json.gz`` objects verify as-is.
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            value = load_anchor_record_bytes(path.read_bytes())
+        except (OSError, ValueError) as exc:
             print(f"error: could not read audit anchor {path}: {exc}", file=sys.stderr)
-            return EXIT_USAGE
-        if not isinstance(value, dict):
-            print(f"error: audit anchor {path} is not a JSON object", file=sys.stderr)
             return EXIT_USAGE
         exports.append((path, value))
 

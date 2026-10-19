@@ -616,3 +616,26 @@ def test_api_verifies_a_v3_audit_anchor(anchored_builder):
     body = response.json()
     assert body["verified"] is True, body
     assert body["anchor_summary"]["provenance_count"] == 5
+
+
+def test_api_verifies_a_gzipped_audit_anchor(anchored_builder):
+    """AG-8: the web upload takes a WORM object as stored."""
+    import gzip
+
+    client = TestClient(app)
+    body = gzip.compress(json.dumps(anchored_builder.anchors[0]).encode(), mtime=0)
+    response = client.post(
+        "/api/v1/verify-anchor",
+        files={"audit_anchor": ("a.json.gz", body, "application/gzip")},
+        data={
+            "trust_anchor": json.dumps(anchored_builder.anchor()),
+            "tsa_roots": anchored_builder.tsa.roots_pem.decode(),
+        },
+    )
+    assert response.json()["verified"] is True, response.json()
+    bad = client.post(
+        "/api/v1/verify-anchor",
+        files={"audit_anchor": ("a.json", b"[1, 2]", "application/json")},
+        data={"trust_anchor": json.dumps(anchored_builder.anchor())},
+    )
+    assert bad.status_code == 400

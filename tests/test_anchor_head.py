@@ -152,6 +152,34 @@ def test_cli_audit_anchor_reports_a_header_only_record(tmp_path, predecessor_bui
     assert HEADER_CHECKS_SKIPPED_REASON in out
 
 
+@pytest.mark.parametrize("which", ["header", "full"])
+def test_cli_audit_anchor_reads_a_gzipped_worm_object(
+    tmp_path, predecessor_builder, capsys, which
+):
+    """AG-8: a WORM object verifies as stored, ``head/`` or ``anchor/``, gzipped."""
+    builder = predecessor_builder
+    record = builder.predecessor if which == "header" else builder.anchors[2]
+    path = tmp_path / "object.json.gz"
+    path.write_bytes(gzip.compress(json.dumps(record).encode(), mtime=0))
+    trust = tmp_path / "trust.json"
+    trust.write_text(json.dumps(predecessor_builder.anchor()))
+    code = main(["--audit-anchor", str(path), "--trust-anchor", str(trust)])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert (HEADER_CHECKS_SKIPPED_REASON in out) is (which == "header")
+
+
+def test_cli_audit_anchor_that_is_neither_json_nor_gzip_is_a_usage_error(
+    tmp_path, predecessor_builder, capsys
+):
+    path = tmp_path / "object.json.gz"
+    path.write_bytes(b"\x1f\x8bnot really gzip")
+    trust = tmp_path / "trust.json"
+    trust.write_text(json.dumps(predecessor_builder.anchor()))
+    assert main(["--audit-anchor", str(path), "--trust-anchor", str(trust)]) == 2
+    assert "could not read audit anchor" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # Package 1.6: the happy path
 # ---------------------------------------------------------------------------
