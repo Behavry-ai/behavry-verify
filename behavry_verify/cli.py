@@ -27,7 +27,18 @@ tenant independently of the package (``GET /api/v1/audit/anchors/head``), and
 every provenance entry older than a verified head's period must be anchored in
 the package. A head file is a `.json` record or a gzipped `.json.gz` object
 as the WORM bucket stores it, told apart by content. Without one, dropping the
-newest anchors cannot be ruled out.
+newest anchors cannot be ruled out. ``--anchor-heads-dir DIR`` adds every
+``*.json`` and ``*.json.gz`` file in a directory as a head.
+
+Collecting heads is the one networked command, kept separate so that every
+verification above stays offline (see :mod:`behavry_verify.collect`):
+
+    BEHAVRY_TOKEN=... behavry-verify collect-heads --base-url https://behavry.example \\
+                   --out heads/ [--token-env NAME] [--since ISO] \\
+                   [--trust-anchor behavry-trust-anchor.json]
+
+    behavry-verify --package authority-<agent_id>.zip \\
+                   --trust-anchor behavry-trust-anchor.json --anchor-heads-dir heads/
 
 Exit codes:
     0  verified
@@ -50,6 +61,7 @@ from behavry_verify.audit_anchor import (
     verify_anchor_chain,
     verify_audit_anchor,
 )
+from behavry_verify.collect import collect_heads_main, load_heads_dir
 from behavry_verify.package import PackageError, load_package_from_path, verify_package
 from behavry_verify.report import TrustSource, VerificationReport
 from behavry_verify.rfc3161 import load_pem_certificates
@@ -57,6 +69,10 @@ from behavry_verify.rfc3161 import load_pem_certificates
 EXIT_VERIFIED = 0
 EXIT_NOT_VERIFIED = 1
 EXIT_USAGE = 2
+
+#: The one subcommand. Every other invocation is the flat verification parser,
+#: unchanged, so ``behavry-verify --package ...`` parses exactly as before.
+COLLECT_HEADS = "collect-heads"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -135,15 +151,34 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--anchor-heads-dir",
+        type=Path,
+        action="append",
+        default=[],
+        metavar="DIR",
+        help=(
+            "A directory of anchor heads, such as one filled by `behavry-verify "
+            "collect-heads`: every *.json and *.json.gz file directly in it is passed "
+            "as an --anchor-head. Repeatable, combines with --anchor-head, --package only."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit the machine-readable report instead of the text report",
     )
     parser.add_argument("--version", action="version", version=__version__)
+    parser.epilog = (
+        f"To collect a tenant's anchor heads (network): behavry-verify {COLLECT_HEADS} --help"
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == COLLECT_HEADS:
+        return collect_heads_main(list(argv[1:]))
     args = build_parser().parse_args(argv)
 
     anchor = None
@@ -199,12 +234,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: could not read anchor head {path}: {exc}", file=sys.stderr)
             return EXIT_USAGE
         heads.append(value)
+    for directory in args.anchor_heads_dir:
+        try:
+            loaded = load_heads_dir(directory)
+        except (OSError, ValueError) as exc:
+            print(f"error: could not read anchor heads dir {directory}: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        heads.extend(value for _, value in loaded)
 
     if args.audit_anchor:
-        if heads:
+        if args.anchor_head or args.anchor_heads_dir:
             print(
-                "error: --anchor-head applies to --package; to verify a head on its own, "
-                "pass it as --audit-anchor",
+                "error: --anchor-head and --anchor-heads-dir apply to --package; to verify "
+                "a head on its own, pass it as --audit-anchor",
                 file=sys.stderr,
             )
             return EXIT_USAGE
