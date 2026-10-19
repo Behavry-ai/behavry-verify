@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.7.0
+
+Sprint AG-7 (item K-4), following Behavry's `docs/strategy/AG7-CONTRACTS.md`
+sections 3 and 4.
+
+### Changed
+
+- **H2 in its overlap form.** A verified head whose period overlaps a run
+  anchor or the predecessor (`head.period_start < anchor.period_end` and
+  `anchor.period_start < head.period_end`), with a different digest, is a
+  fork and fails check 15 (H2a). This still includes the AG-6 equal-start
+  case, and now also catches a key holder re-sealing a shifted period, signed
+  and TSA-stamped. Two verified heads that overlap each other with different
+  digests fail too (H2b). Periods are half-open, so touching at a boundary is
+  not a fork, and a head equal to a run anchor stays consistent.
+
+### Added
+
+- `provenance_anchoring.forks`, present whenever a head is supplied: one row
+  per fork, with `against` (`run`, `predecessor` or `head`), `head_index`,
+  the head's id, period and digest, and the contradicted anchor's id, period
+  and digest (`other_head_index` for a fork between two heads). The head's
+  row gains `failed_checks: ["fork"]`, and the text and web reports name the
+  anchor each forked head contradicts.
+- **Gzipped head files.** `--anchor-head`, the `anchor_head` API field and the
+  web upload accept a `.json` record (header-only or full) or a gzipped
+  `.json.gz` record, exactly as Behavry's WORM bucket stores anchor and head
+  objects. The form is detected by the gzip magic number, not the file name,
+  and the server decompresses uploads (capped at 64 MiB inflated).
+
+### Unchanged
+
+- A report with no head keeps its 0.6.0 shape: `forks` is not added.
+
 ## 0.6.0
 
 Sprint AG-6 (independent anchor head), following Behavry's

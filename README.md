@@ -175,9 +175,11 @@ Package 1.5 proves nothing is missing inside the run, not that the run starts an
 **The tail: anchor heads (any package from 1.4).** The newest anchors can only be shown to be missing by something obtained outside the package. Ask the tenant for its newest sealed anchor, `GET /api/v1/audit/anchors/head` (or any anchor, `GET /api/v1/audit/anchors/{id}/header`), and pass it with `--anchor-head`, which may repeat:
 
 - **H1.** Each head must verify, as a header-only or a full record, and be for the package's tenant. A head that does not is reported, is not used, and **fails** the check: a supplied head that does not verify is a finding.
-- **H2.** A head with the same `period_start` as an anchor in the package (or its predecessor) but a different digest is a **fork**, and fails.
+- **H2.** A verified head whose period overlaps an anchor in the package, or its predecessor, with a different digest is a **fork**, and fails (H2a). Two verified heads that overlap each other with different digests are a fork too (H2b). Periods are half-open: a head overlaps an anchor when `head.period_start < anchor.period_end` and `anchor.period_start < head.period_end`, so a head that starts where an anchor ends is not a fork. A head equal to a run anchor (same digest) is consistent. Each fork names the two anchors and their periods, and the head's row carries `failed_checks: ["fork"]`. Since 0.7.0 (Behavry Sprint AG-7); 0.6.0 caught only an equal `period_start`.
 - **H3.** Every entry older than a verified head's `period_end` must be `anchored`. One that would read `not_yet_anchored` becomes `missing`, "sealed by anchor <head id> (<period>), which the package does not carry", and the check **fails**. When the head was sealed after the package was created, the finding adds that the package may simply predate the head, and to export a fresh one.
 - **H4.** With no head, the check passes or fails on the 1.5 rules, and the report says "no independent anchor head supplied: truncation of the newest anchors cannot be ruled out".
+
+A head file may be a `.json` record (header-only or full) or a gzipped `.json.gz` record, exactly as Behavry's WORM bucket stores `tenant/<id>/anchor/<period>.json.gz` and `tenant/<id>/head/<period>.json.gz`. The form is told apart by its content (the gzip magic number), not its file name, on the CLI, the API and the web page alike.
 
 A head covers only what was sealed when you obtained it. For the strongest statement, take a fresh head at verification time, or read the newest object in the tenant's WORM bucket yourself. A 1.6 report, or any report given a head, adds these keys to `provenance_anchoring` (`predecessor` is 1.6 only, and is null when the run starts the chain):
 
@@ -187,13 +189,18 @@ A head covers only what was sealed when you obtained it. For the strongest state
              "anchor_digest": "...", "verified": true, "tsa_gen_time": "...",
              "failed_checks": []}],
   "head_note": null,
+  "forks": [{"against": "run", "head_index": 0, "head_anchor_id": "...",
+             "head_period_start": "...", "head_period_end": "...",
+             "head_anchor_digest": "...", "anchor_id": "...",
+             "anchor_period_start": "...", "anchor_period_end": "...",
+             "anchor_digest": "..."}],
   "predecessor": {"anchor_id": "...", "schema": "behavry.audit_anchor.v3",
                   "anchor_digest": "...", "verified": true, "period_start": "...",
                   "period_end": "...", "failed_checks": []}
 }
 ```
 
-`head_note` holds the H4 text when no head was supplied, and is null otherwise. A 1.4 or 1.5 report with no head keeps its earlier shape exactly.
+`head_note` holds the H4 text when no head was supplied, and is null otherwise. `forks` is present when a head was supplied, empty when there is none. `against` is `"run"`, `"predecessor"` or `"head"`; for a fork between two heads, `head_index` is the later head, `other_head_index` the earlier one, and the `anchor_*` fields describe the earlier head. A 1.4 or 1.5 report with no head keeps its earlier shape exactly.
 
 ### Passing Minotaur's key
 
@@ -300,6 +307,10 @@ Authority package with the tenant's anchor head, obtained from Behavry separatel
 ```bash
 behavry-verify --package authority-agent-123.zip --trust-anchor anchor.json \
                --observer-anchor minotaur-observer-key.json --anchor-head anchor-head.json
+
+behavry-verify --package authority-agent-123.zip --trust-anchor anchor.json \
+               --observer-anchor minotaur-observer-key.json \
+               --anchor-head 20261015T111100Z.json.gz   # straight from the WORM bucket
 ```
 
 Audit anchor, optionally with your TSA roots. Repeat `--audit-anchor` to also walk a set for missing periods:
@@ -324,7 +335,7 @@ curl -X POST https://verify.behavry.ai/api/v1/verify \
   -F anchor_head=@anchor-head.json                  # optional, repeatable file
 ```
 
-`anchor_head` is a file field too, and may repeat, like `--anchor-head`. `POST /api/v1/verify.txt` takes it as well.
+`anchor_head` is a file field too, and may repeat, like `--anchor-head`. It takes the same `.json` and `.json.gz` forms; the server decompresses a gzipped one. `POST /api/v1/verify.txt` takes it as well.
 
 `observer_anchor` is a file field and may repeat, one observer key file each, like `--observer-anchor`. The older `observer_anchors` field (JSON text of one anchor or a list) still works, and both are combined.
 

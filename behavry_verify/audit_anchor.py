@@ -34,8 +34,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+import gzip
 import hashlib
+import io
 import json
+import zlib
 from datetime import UTC, datetime
 from typing import Any
 
@@ -63,6 +66,7 @@ __all__ = [
     "RECORDS_PROVENANCE",
     "anchor_provenance_hashes",
     "canonical_anchor_bytes",
+    "load_anchor_record_bytes",
     "verify_audit_anchor",
     "verify_anchor_chain",
 ]
@@ -141,6 +145,42 @@ def canonical_anchor_bytes(anchor: dict[str, Any]) -> bytes:
     return json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode(
         "utf-8"
     )
+
+
+#: The gzip magic number. AG7-CONTRACTS section 4: a ``.json.gz`` anchor or
+#: head object is told apart by content, never by file name.
+GZIP_MAGIC = b"\x1f\x8b"
+#: The most a gzipped anchor record may inflate to, against a gzip bomb.
+MAX_ANCHOR_RECORD_BYTES = 64 * 1024 * 1024
+
+
+def load_anchor_record_bytes(data: bytes) -> dict[str, Any]:
+    """An anchor record from the bytes of a file: JSON, or gzipped JSON.
+
+    AG7-CONTRACTS section 4: a ``--anchor-head`` file is a header-only or full
+    record as ``.json``, or a gzipped record exactly as Behavry's WORM bucket
+    stores ``anchor/<period>.json.gz`` and ``head/<period>.json.gz``. The form
+    is detected by the gzip magic number. Raises :class:`ValueError` with a
+    reason when the bytes are neither, or do not hold a JSON object.
+    """
+    if data[:2] == GZIP_MAGIC:
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
+                inflated = stream.read(MAX_ANCHOR_RECORD_BYTES + 1)
+        except (OSError, EOFError, zlib.error) as exc:
+            raise ValueError(f"not a valid gzip file: {exc}") from exc
+        if len(inflated) > MAX_ANCHOR_RECORD_BYTES:
+            raise ValueError(
+                f"gzipped record inflates past {MAX_ANCHOR_RECORD_BYTES} bytes"
+            )
+        data = inflated
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"not valid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError("an anchor record must be a JSON object")
+    return value
 
 
 def _parse_time(value: Any) -> datetime | None:

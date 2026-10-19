@@ -287,11 +287,29 @@
   function headsLine(anchoring) {
     if (!anchoring || !("heads" in anchoring)) return null;
     if (anchoring.head_note) return anchoring.head_note;
-    return (anchoring.heads || []).map(function (head) {
-      return head.anchor_id + " (" + head.period_start + " to " + head.period_end + "), " +
+    var forks = anchoring.forks || [];
+    return (anchoring.heads || []).map(function (head, index) {
+      var line = head.anchor_id + " (" + head.period_start + " to " + head.period_end + "), " +
         (head.verified ? "verified"
           : "NOT VERIFIED, not used: " + (head.failed_checks || []).join(", "));
+      // AG-7: name each anchor a forked head contradicts.
+      var against = forks.filter(function (fork) {
+        return fork.head_index === index || fork.other_head_index === index;
+      }).map(function (fork) { return forkAgainst(fork, index); });
+      if (against.length) line += ", FORK: contradicts " + against.join(", ");
+      return line;
     }).join("; ");
+  }
+
+  var FORK_KIND = {run: "run anchor", predecessor: "run predecessor", head: "anchor head"};
+
+  function forkAgainst(fork, index) {
+    if (fork.against === "head" && fork.head_index !== index) {
+      return "anchor head " + fork.head_anchor_id + " (" + fork.head_period_start +
+        " to " + fork.head_period_end + ")";
+    }
+    return (FORK_KIND[fork.against] || "anchor") + " " + fork.anchor_id + " (" +
+      fork.anchor_period_start + " to " + fork.anchor_period_end + ")";
   }
 
   function signerLine(report) {

@@ -46,6 +46,10 @@ It is built with the same helpers as the APR package, so checks 1 to 11 in
     older than a verified head's period end must be anchored. Heads apply to
     1.4 and 1.5 packages too, because they are evidence about the tenant.
 
+    Since 0.7.0 (Sprint AG-7, ``docs/strategy/AG7-CONTRACTS.md`` section 3), a
+    verified head whose period overlaps a run anchor, the predecessor or
+    another verified head, with a different digest, is a fork and fails.
+
 Counterparts (repo ``Behavry-ai/behavry``):
 
   ``provenance_canonical_body`` -> ``backend/behavry/authority/provenance.py``
@@ -503,6 +507,18 @@ NO_HEAD_NOTE = (
 _ANCHOR_V3 = "behavry.audit_anchor.v3"
 
 
+def _overlaps(start: Any, end: Any, other_start: Any, other_end: Any) -> bool:
+    """AG7-CONTRACTS section 3: two periods overlap when each starts before the other ends.
+
+    Periods are half-open, so one that ends where the other starts does not
+    overlap it. When either end is unreadable, an equal start still counts
+    (the AG-6 form of H2).
+    """
+    if None not in (start, end, other_start, other_end):
+        return start < other_end and other_start < end
+    return start is not None and start == other_start
+
+
 def _in_span_gap(sealed: list[Any], ts: Any) -> bool:
     """True when ``ts`` lies inside the run's span but in no anchor's period."""
     bounds = [(s[0], s[1]) for s in sealed if s[0] is not None and s[1] is not None]
@@ -760,10 +776,52 @@ def check_provenance_anchoring(
                 "carries no predecessor, so where the run begins cannot be confirmed"
             )
 
-    # AG6-CONTRACTS section 4, H1 and H2: anchor heads supplied by the
-    # verifying party. A head that does not verify is a finding, and unused.
+    # AG6-CONTRACTS section 4, H1, and AG7-CONTRACTS section 3, H2a and H2b:
+    # anchor heads supplied by the verifying party. A head that does not
+    # verify is a finding, and unused.
     head_rows: list[dict[str, Any]] = []
     verified_heads: list[tuple[dict[str, Any], Any, Any]] = []
+    verified_index: list[int] = []
+    forks: list[dict[str, Any]] = []
+
+    def _fork(
+        kind: str,
+        index: int,
+        head: dict[str, Any],
+        other: dict[str, Any],
+        other_index: int | None = None,
+    ) -> None:
+        row = {
+            "against": kind,
+            "head_index": index,
+            "head_anchor_id": head.get("anchor_id"),
+            "head_period_start": head.get("period_start"),
+            "head_period_end": head.get("period_end"),
+            "head_anchor_digest": head.get("anchor_digest"),
+            "anchor_id": other.get("anchor_id"),
+            "anchor_period_start": other.get("period_start"),
+            "anchor_period_end": other.get("period_end"),
+            "anchor_digest": other.get("anchor_digest"),
+        }
+        if other_index is not None:
+            row["other_head_index"] = other_index
+        forks.append(row)
+        for i in (index, other_index):
+            if i is not None and "fork" not in head_rows[i]["failed_checks"]:
+                head_rows[i]["failed_checks"].append("fork")
+        what = {
+            "run": "the package's anchor",
+            "predecessor": "the run's predecessor",
+            "head": "anchor head",
+        }[kind]
+        failures.append(
+            f"fork: anchor head {head.get('anchor_id') or f'#{index}'} "
+            f"({head.get('period_start')}..{head.get('period_end')}) contradicts {what} "
+            f"{other.get('anchor_id')} ({other.get('period_start')}.."
+            f"{other.get('period_end')}): their periods overlap, with different digests "
+            f"({head.get('anchor_digest')} and {other.get('anchor_digest')})"
+        )
+
     for index, head in enumerate(heads):
         head = head if isinstance(head, dict) else {}
         ok, failed, head_summary = _verify_record(head)
@@ -788,20 +846,26 @@ def check_provenance_anchoring(
             continue
         head_start = _parse_time(head.get("period_start"))
         head_end = _parse_time(head.get("period_end"))
-        verified_heads.append((head, head_start, head_end))
-        known = [*exports, *([predecessor] if predecessor is not None else [])]
-        for other in known:
-            if (
-                head_start is not None
-                and _parse_time(other.get("period_start")) == head_start
-                and other.get("anchor_digest") != head.get("anchor_digest")
+        # H2a: against every run anchor and the predecessor.
+        known = [("run", other) for other in exports]
+        if predecessor is not None:
+            known.append(("predecessor", predecessor))
+        for kind, other in known:
+            if other.get("anchor_digest") != head.get("anchor_digest") and _overlaps(
+                head_start, head_end,
+                _parse_time(other.get("period_start")), _parse_time(other.get("period_end")),
             ):
-                failures.append(
-                    f"fork: anchor head {ident} and the package's anchor "
-                    f"{other.get('anchor_id')} both seal the period starting "
-                    f"{head.get('period_start')}, with different digests "
-                    f"({head.get('anchor_digest')} and {other.get('anchor_digest')})"
-                )
+                _fork(kind, index, head, other)
+        # H2b: against every head verified before it.
+        for (other, other_start, other_end), other_index in zip(
+            verified_heads, verified_index, strict=True
+        ):
+            if other.get("anchor_digest") != head.get("anchor_digest") and _overlaps(
+                head_start, head_end, other_start, other_end
+            ):
+                _fork("head", index, head, other, other_index)
+        verified_heads.append((head, head_start, head_end))
+        verified_index.append(index)
 
     # Classify each provenance entry of the package.
     first_start = _parse_time(exports[0].get("period_start")) if exports else None
@@ -978,6 +1042,8 @@ def check_provenance_anchoring(
         report.provenance_anchoring.update(
             {"heads": head_rows, "head_note": None if heads else NO_HEAD_NOTE}
         )
+    if heads:
+        report.provenance_anchoring["forks"] = forks
     if with_predecessor:
         report.provenance_anchoring["predecessor"] = predecessor_row
 
