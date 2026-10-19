@@ -279,7 +279,7 @@ def test_stored_head_with_different_content_is_a_conflict_and_not_overwritten(
     assert _collect(feed, out) == 0
     target = out / head_file_name(feed.heads[2])
     altered = json.loads(target.read_text())
-    altered["sealed_at"] = "2026-10-15T12:00:00+00:00"
+    altered["anchor_digest"] = "0" * 64  # another record for this period
     target.write_text(json.dumps(altered))
     before = target.read_bytes()
     capsys.readouterr()
@@ -296,6 +296,29 @@ def test_same_content_in_another_layout_is_not_a_conflict(tmp_path, feed):
     target = out / head_file_name(feed.heads[2])
     target.write_text(json.dumps(json.loads(target.read_text()), separators=(",", ":")))
     assert _collect(feed, out, "--since", feed.heads[0]["period_start"]) == 0
+
+
+def test_stored_head_differing_only_in_unsigned_fields_is_already_present(
+    tmp_path, builder, capsys
+):
+    heads = _heads(builder)
+    out = tmp_path / "heads"
+    with FeedServer(heads) as feed:
+        assert _collect(feed, out) == 0
+    # The feed now serves heads[2] with fields outside the signed bytes changed;
+    # the anchor_id keeps its first 8 characters, so it maps to the same file.
+    changed = {**copy.deepcopy(heads[2]), "anchor_id": heads[2]["anchor_id"] + "-renamed",
+               "sealed_at": "2026-10-15T12:00:00.000000+00:00"}
+    assert changed["anchor_digest"] == heads[2]["anchor_digest"]
+    assert head_file_name(changed) == head_file_name(heads[2])
+    target = out / head_file_name(heads[2])
+    before = target.read_bytes()
+    capsys.readouterr()
+    with FeedServer([*heads[:2], changed, *heads[3:]]) as feed:
+        assert _collect(feed, out, "--since", heads[0]["period_start"]) == 0
+    assert target.read_bytes() == before
+    text = capsys.readouterr().out
+    assert "5 already present" in text and "CONFLICT" not in text
 
 
 def test_fork_for_a_stored_period_is_a_conflict_and_not_saved(tmp_path, builder, capsys):

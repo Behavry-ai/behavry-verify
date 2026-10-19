@@ -16,9 +16,11 @@ Rules:
 * resume after the newest head already in the directory, by ``period_start``
   inside the files, not their names (unless ``--since``);
 * save each head as ``<YYYYmmddTHHMMSSZ of period_start>-<anchor_id[:8]>.json``;
-* a file that already holds a different record is never overwritten: it is a
-  conflict. So is a head whose ``period_start`` equals a stored head's with a
-  different ``anchor_digest``: two records for one period;
+* a file that already holds a different record (another ``anchor_digest``)
+  is never overwritten: it is a conflict. One with the same ``anchor_digest``
+  is already present, whatever its unsigned fields say. A head whose
+  ``period_start`` equals a stored head's with a different ``anchor_digest``
+  is a conflict too: two records for one period;
 * with ``--trust-anchor``, a head that does not verify (digest, signature,
   TSA) is not saved and is reported;
 * the bearer token comes from an environment variable, never from argv, and
@@ -408,7 +410,12 @@ def _take(
             existing = load_anchor_record_bytes(path.read_bytes())
         except (OSError, ValueError):
             existing = None
-        if existing == record:
+        # Same signed content, not same bytes: fields outside the canonical
+        # anchor bytes (anchor_id, sealed_at, ...) may differ without making
+        # it another record. A tampered stored file is caught when
+        # --anchor-heads-dir verifies it.
+        stored_digest = existing.get("anchor_digest") if existing else None
+        if stored_digest and stored_digest == record.get("anchor_digest"):
             tally.present += 1
         else:
             tally.conflicts.append(

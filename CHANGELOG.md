@@ -18,9 +18,11 @@ section 3.
   from the command line, and is never printed. With `--trust-anchor`, each
   head is verified (digest, signature, TSA, and the TSA chain with
   `--tsa-roots`) before it is saved; one that does not verify is not saved
-  and is reported. A stored file is never overwritten: one with different
-  content, or a stored head for the same `period_start` with another
-  `anchor_digest`, is reported as a conflict. Exit codes: 0 ok, 1 on any
+  and is reported. A stored file is never overwritten: one with another
+  `anchor_digest`, or a stored head for the same `period_start` with another
+  `anchor_digest`, is reported as a conflict. A stored file with the same
+  `anchor_digest` is already present, even when fields outside the signed
+  bytes (such as `anchor_id`) differ. Exit codes: 0 ok, 1 on any
   conflict or unverified head, 2 on a usage, network or HTTP error. It uses
   the standard library's `urllib` (proxy and CA settings from the
   environment), so the CLI still depends on `cryptography` alone; it refuses
