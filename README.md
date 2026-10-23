@@ -200,7 +200,31 @@ A head covers only what was sealed when you obtained it. For the strongest state
 }
 ```
 
+With `--anchor-heads-dir`, the report also carries `head_gaps` (empty when every folder links; see "Gaps between held heads" below):
+
+```json
+{
+  "head_gaps": [{"folder": "heads", "earlier_anchor_id": "...",
+                 "earlier_period_start": "...", "earlier_period_end": "...",
+                 "earlier_anchor_digest": "...", "later_anchor_id": "...",
+                 "later_period_start": "...", "later_period_end": "...",
+                 "later_previous_anchor_digest": "...", "names_held_anchor_id": null}]
+}
+```
+
 `head_note` holds the H4 text when no head was supplied, and is null otherwise. `forks` is present when a head was supplied, empty when there is none. `against` is `"run"`, `"predecessor"` or `"head"`; for a fork between two heads, `head_index` is the later head, `other_head_index` the earlier one, and the `anchor_*` fields describe the earlier head. A 1.4 or 1.5 report with no head keeps its earlier shape exactly.
+
+#### Gaps between held heads (0.9.0)
+
+Every v2 and v3 anchor signs `previous_anchor_digest`, the digest of the tenant's anchor before it. So a folder of heads, in `period_start` order, must link: each v2 or v3 head's `previous_anchor_digest` must be the `anchor_digest` of the held head before it. One that names any other digest is a **gap**: the feed withheld at least one head between the two, or the folder is missing one. `--anchor-heads-dir` checks each folder's verified heads, and a gap fails check 15 (a folder of heads that does not link cannot vouch for completeness); `collect-heads` checks the whole folder after every run.
+
+- The first held head starts a segment, whatever it points at: the tenant's chain began before your collection did.
+- A v1 head (its schema signs no `previous_anchor_digest`), and a head whose `previous_anchor_digest` is null or empty, start a new segment and are never gaps.
+- The same record held twice (one `anchor_digest`, say as `.json` and `.json.gz`) counts once.
+- Two heads for one `period_start` with different digests are a fork, which H2b (and `collect-heads`, as a conflict) already reports. They count as one position: the next head links when it names either of them, and the position links when either of them links back. A fork is therefore not reported a second time as a gap, while a head withheld before it still is.
+- Under check 15, only verified heads count: one that does not verify is already a finding and cannot bridge a gap.
+- Each folder is checked on its own. Heads given as separate `--anchor-head` files are not checked for gaps: they are usually a sparse sample, such as a head taken at verification time.
+- A feed that withholds the newest heads is not a gap, since nothing after them links back. A fresh head obtained later, or one read from the WORM bucket, closes that.
 
 ### Passing Minotaur's key
 
@@ -313,7 +337,7 @@ behavry-verify --package authority-agent-123.zip --trust-anchor anchor.json \
                --anchor-head 20261015T111100Z.json.gz   # straight from the WORM bucket
 ```
 
-A directory of heads, such as one kept by `collect-heads` (below): every `*.json` and `*.json.gz` file directly in it (not in subdirectories) is passed as an `--anchor-head`. It may repeat, and combines with `--anchor-head`. This reads files only: package verification never touches the network.
+A directory of heads, such as one kept by `collect-heads` (below): every `*.json` and `*.json.gz` file directly in it (not in subdirectories) is passed as an `--anchor-head`, and the folder's heads must link (a gap fails check 15; see "Gaps between held heads"). It may repeat, and combines with `--anchor-head`. This reads files only: package verification never touches the network.
 
 ```bash
 behavry-verify --package authority-agent-123.zip --trust-anchor anchor.json \
@@ -349,9 +373,10 @@ behavry-verify collect-heads --base-url URL --out DIR [--token-env NAME]
 - The bearer token is read from the environment variable named by `--token-env` (default `BEHAVRY_TOKEN`). It is never accepted as an argument and never printed. Redirects are refused, so the token is only sent to `--base-url`, and plain `http://` is accepted only for a loopback host. The usual `HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE` and `SSL_CERT_DIR` settings apply.
 - With `--trust-anchor`, each head is verified before it is saved (digest, Behavry signature, RFC 3161 token, and the TSA chain if you add `--tsa-roots`), exactly as check 15 verifies a head. One that does not verify is not saved and is reported. Without `--trust-anchor`, heads are saved unchecked; `--anchor-heads-dir` still verifies each of them later.
 - A stored file is never overwritten. If the file for a head already exists and holds a different `anchor_digest` (or none), or a stored head has the same `period_start` and a different `anchor_digest`, that is a **conflict**: two records for one period. It is reported and the new head is not saved. A stored file with the same `anchor_digest` counts as already present, even if fields outside the signed bytes (such as `anchor_id` or `sealed_at`) or its formatting differ; `--anchor-heads-dir` verifies its signed content when you use it.
-- Exit codes: `0` when every head collected verified or was not checked, `1` on any conflict or unverified head, `2` on a usage, network or HTTP error.
+- After collecting, the chain is checked across every head in `DIR`, not only those fetched by this run (see "Gaps between held heads"). Each gap is reported naming both heads, by `anchor_id` and period. A fresh `DIR` started with `--since` starts its own segment; a `--since` that skips past heads `DIR` already holds the next ones for is a gap.
+- Exit codes: `0` when every head collected verified or was not checked and the heads in `DIR` link, `1` on any conflict, unverified head or gap, `2` on a usage, network or HTTP error.
 
-The collector trusts the feed for completeness: a feed that withholds a head hides it from you. What it cannot do is make a package verify that contradicts a head you already collected.
+A feed that withholds a head between two you collect is caught as a gap. One that withholds the newest heads is not, since nothing after them links back yet; it cannot, though, make a package verify that contradicts a head you already collected.
 
 ### API
 

@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.9.0
+
+Sprint AG-9 (item M-4), following Behavry's `docs/strategy/AG9-CONTRACTS.md`
+sections 5 and 6.
+
+### Added
+
+- **Gaps between held heads.** Every v2 and v3 anchor signs
+  `previous_anchor_digest`, so the heads an auditor holds, in `period_start`
+  order, must link. A v2 or v3 head whose `previous_anchor_digest` is not the
+  `anchor_digest` of the held head before it is a gap: at least one head
+  between them was withheld or is missing. The first held head, any v1 head
+  and any head with a null or empty `previous_anchor_digest` start a segment
+  and are not gaps. The same record held twice counts once. Two heads for one
+  `period_start` with different digests (a fork, already reported) count as
+  one position, so a fork is not reported again as a gap.
+- **`collect-heads`** checks the chain across every head in `--out` after
+  collecting, names both heads of each gap (`anchor_id` and period), and exits
+  1 on any gap. Other exit codes are unchanged.
+- **`--anchor-heads-dir`** checks each folder's verified heads the same way.
+  A gap is a finding on check 15 that fails the package, and is a row in the
+  new `provenance_anchoring.head_gaps` list (present whenever a folder was
+  given, empty when every folder links). The text report adds a `Head gap`
+  line per gap.
+
+### Unchanged
+
+- Heads given as separate `--anchor-head` files, and through the web upload
+  and `POST /api/v1/verify`, are not checked for gaps: they are usually a
+  sparse sample. Only a folder must link.
+- A head that does not verify still fails the check on its own, and is not
+  used to bridge a gap.
+- A feed that withholds the newest heads is still not detectable from the
+  heads alone (AG9-CONTRACTS section 6).
+
+### Changed
+
+- `find_head_gaps` and `describe_head_gap` are new in
+  `behavry_verify.audit_anchor`; `verify_package` takes `anchor_head_dirs`
+  (folder name and its records), and check 15 takes `head_folders`.
+
 ## 0.8.0
 
 Sprint AG-8 (item L-2), following Behavry's `docs/strategy/AG8-CONTRACTS.md`
