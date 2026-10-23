@@ -161,7 +161,8 @@ class VerificationReport:
     # missing, unanchored, anchor_unverified). See
     # :func:`behavry_verify.authority.check_provenance_anchoring`. Package 1.6,
     # or any package given an anchor head, adds ``heads`` and ``head_note``;
-    # 1.6 adds ``predecessor``.
+    # 1.6 adds ``predecessor``. A package given an ``--anchor-heads-dir``
+    # folder adds ``head_gaps`` (AG-9).
     provenance_anchoring: dict[str, Any] | None = None
 
     trust_source: TrustSource = TrustSource.NONE
@@ -311,6 +312,14 @@ class VerificationReport:
                 lines.append(
                     f"  {'Anchor head'.ljust(width)}  {head.get('anchor_id')} "
                     f"({head.get('period_start')}..{head.get('period_end')}), {state}"
+                )
+            # AG9-CONTRACTS section 5: name both heads of each gap in a folder.
+            for gap in pa.get("head_gaps") or []:
+                lines.append(
+                    f"  {'Head gap'.ljust(width)}  {gap.get('folder')}: between "
+                    f"{gap.get('earlier_anchor_id')} ({gap.get('earlier_period_start')}) and "
+                    f"{gap.get('later_anchor_id')} ({gap.get('later_period_start')}), "
+                    "they do not link"
                 )
             if pa.get("head_note"):
                 lines.append(f"  {'Anchor head'.ljust(width)}  {pa['head_note']}")

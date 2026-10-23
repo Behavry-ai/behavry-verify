@@ -28,7 +28,10 @@ every provenance entry older than a verified head's period must be anchored in
 the package. A head file is a `.json` record or a gzipped `.json.gz` object
 as the WORM bucket stores it, told apart by content. Without one, dropping the
 newest anchors cannot be ruled out. ``--anchor-heads-dir DIR`` adds every
-``*.json`` and ``*.json.gz`` file in a directory as a head.
+``*.json`` and ``*.json.gz`` file in a directory as a head, and requires the
+folder's heads to link (a gap between two of them fails check 15). Separate
+``--anchor-head`` files are not checked for gaps: they are usually a sparse
+sample.
 
 Collecting heads is the one networked command, kept separate so that every
 verification above stays offline (see :mod:`behavry_verify.collect`):
@@ -159,7 +162,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "A directory of anchor heads, such as one filled by `behavry-verify "
             "collect-heads`: every *.json and *.json.gz file directly in it is passed "
-            "as an --anchor-head. Repeatable, combines with --anchor-head, --package only."
+            "as an --anchor-head, and the folder's heads must link: a gap between two "
+            "of them fails the package. Repeatable, combines with --anchor-head, "
+            "--package only."
         ),
     )
     parser.add_argument(
@@ -227,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_USAGE
 
     heads: list[dict] = []
+    head_dirs: list[tuple[str, list[dict]]] = []
     for path in args.anchor_head:
         try:
             value = load_anchor_record_bytes(path.read_bytes())
@@ -240,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError) as exc:
             print(f"error: could not read anchor heads dir {directory}: {exc}", file=sys.stderr)
             return EXIT_USAGE
-        heads.extend(value for _, value in loaded)
+        head_dirs.append((str(directory), [value for _, value in loaded]))
 
     if args.audit_anchor:
         if args.anchor_head or args.anchor_heads_dir:
@@ -266,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         observer_anchors=observer_anchors,
         tsa_roots=roots,
         anchor_heads=heads,
+        anchor_head_dirs=head_dirs,
     )
 
     if args.json:

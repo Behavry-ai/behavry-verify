@@ -351,6 +351,7 @@ def verify_package(
     observer_anchors: list[dict[str, Any]] | None = None,
     tsa_roots: list[Any] | None = None,
     anchor_heads: list[dict[str, Any]] | None = None,
+    anchor_head_dirs: list[tuple[str, list[dict[str, Any]]]] | None = None,
 ) -> VerificationReport:
     """Verify an assembled evidence package and return a full report.
 
@@ -368,8 +369,20 @@ def verify_package(
     :func:`behavry_verify.anchor.validate_observer_anchors`), supplied by the
     verifying party. Observations whose key is not supplied are reported as
     not independently verified, never as passed.
+
+    ``anchor_head_dirs`` are folders of heads, as ``(name, records)``, such as
+    ``collect-heads`` fills (``--anchor-heads-dir``). Their heads are used
+    exactly as ``anchor_heads``, and in addition each folder's verified heads
+    must link (AG9-CONTRACTS section 5): a gap fails check 15. Heads passed in
+    ``anchor_heads`` are not checked for gaps, since they are usually a sparse
+    sample.
     """
     report = VerificationReport(trust_source=trust_source)
+    heads = list(anchor_heads or [])
+    head_folders: list[tuple[str, list[int]]] = []
+    for name, records in anchor_head_dirs or []:
+        head_folders.append((name, list(range(len(heads), len(heads) + len(records)))))
+        heads.extend(records)
 
     manifest = components.get("manifest.json")
     if not isinstance(manifest, dict):
@@ -555,7 +568,7 @@ def verify_package(
         # -- 15. Provenance anchored (1.4) ------------------------------------
         check_provenance_anchoring(
             report, components, manifest, anchor, raw_public_key, tsa_roots,
-            heads=anchor_heads,
+            heads=heads, head_folders=head_folders,
         )
 
     return report.finalize()

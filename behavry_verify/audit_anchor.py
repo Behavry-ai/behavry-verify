@@ -66,6 +66,8 @@ __all__ = [
     "RECORDS_PROVENANCE",
     "anchor_provenance_hashes",
     "canonical_anchor_bytes",
+    "describe_head_gap",
+    "find_head_gaps",
     "load_anchor_record_bytes",
     "verify_audit_anchor",
     "verify_anchor_chain",
@@ -804,3 +806,107 @@ def verify_anchor_chain(exports: list[dict[str, Any]]) -> tuple[bool, list[str]]
     if problems:
         return False, lines + problems
     return True, lines + ["Anchor chain VERIFIED: no period is missing from this set"]
+
+
+def find_head_gaps(heads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The gaps in a set of held anchor heads (Behavry Sprint AG-9 M-4).
+
+    ``docs/strategy/AG9-CONTRACTS.md`` section 5: every v2 and v3 anchor signs
+    ``previous_anchor_digest``, so the heads an auditor holds, in
+    ``period_start`` order, must link. Rules:
+
+    * heads are ordered by ``period_start``; identical ``anchor_digest`` values
+      count once (the same record held twice, say ``.json`` and ``.json.gz``);
+    * heads sharing a ``period_start`` with different digests are a fork (two
+      records for one period), which check 15 (H2b) and ``collect-heads``
+      already report. They are one position in the order: a later head links
+      when it names ANY of them, and that position links when ANY of them
+      starts a segment or names a digest of the position before. So a fork is
+      never reported a second time as a gap, while a fork whose every side
+      fails to link still shows the gap before it;
+    * the first position, any v1 head (no back-pointer in its schema) and any
+      head whose ``previous_anchor_digest`` is null or empty start a segment
+      and are not gaps;
+    * otherwise a back-pointer that names a digest other than the preceding
+      position's is a gap between those two positions: the feed withheld at
+      least one head between them, or the folder is missing one. That holds
+      when the digest named is another held head too (the order disagrees with
+      the chain), which the row says in ``names_held_anchor_id``.
+
+    A head with no readable ``period_start`` cannot be placed and is left out.
+    Signatures are not checked here: pass verified heads where it matters.
+    Each gap is a row naming both heads, in period order.
+    """
+    seen: set[Any] = set()
+    placed: list[tuple[datetime, dict[str, Any]]] = []
+    for head in heads:
+        if not isinstance(head, dict):
+            continue
+        start = _parse_time(head.get("period_start"))
+        if start is None:
+            continue
+        digest = head.get("anchor_digest")
+        if digest:
+            if digest in seen:
+                continue
+            seen.add(digest)
+        placed.append((start, head))
+    placed.sort(key=lambda item: (item[0], str(item[1].get("anchor_digest") or "")))
+
+    positions: list[list[dict[str, Any]]] = []
+    last_start: datetime | None = None
+    for start, head in placed:
+        if positions and start == last_start:
+            positions[-1].append(head)
+        else:
+            positions.append([head])
+        last_start = start
+    by_digest = {h.get("anchor_digest"): h for _, h in placed if h.get("anchor_digest")}
+
+    gaps: list[dict[str, Any]] = []
+    for index in range(1, len(positions)):
+        earlier, later = positions[index - 1], positions[index]
+        digests = {h.get("anchor_digest") for h in earlier if h.get("anchor_digest")}
+        unlinked: list[dict[str, Any]] = []
+        for head in later:
+            schema = head.get("schema") or ANCHOR_SCHEMA_V1
+            pointer = head.get("previous_anchor_digest") or None
+            if schema not in _CHAINED_SCHEMAS or pointer is None or pointer in digests:
+                unlinked = []
+                break
+            unlinked.append(head)
+        if not unlinked:
+            continue
+        before, after = earlier[-1], unlinked[0]
+        named = by_digest.get(after.get("previous_anchor_digest"))
+        gaps.append(
+            {
+                "earlier_anchor_id": before.get("anchor_id"),
+                "earlier_period_start": before.get("period_start"),
+                "earlier_period_end": before.get("period_end"),
+                "earlier_anchor_digest": before.get("anchor_digest"),
+                "later_anchor_id": after.get("anchor_id"),
+                "later_period_start": after.get("period_start"),
+                "later_period_end": after.get("period_end"),
+                "later_previous_anchor_digest": after.get("previous_anchor_digest"),
+                "names_held_anchor_id": named.get("anchor_id") if named else None,
+            }
+        )
+    return gaps
+
+
+def describe_head_gap(gap: dict[str, Any]) -> str:
+    """One line naming both heads of a gap (period and anchor_id)."""
+    line = (
+        f"gap between head {gap.get('earlier_anchor_id')} "
+        f"({gap.get('earlier_period_start')}..{gap.get('earlier_period_end')}) and head "
+        f"{gap.get('later_anchor_id')} "
+        f"({gap.get('later_period_start')}..{gap.get('later_period_end')}): the later head's "
+        f"previous_anchor_digest {gap.get('later_previous_anchor_digest')} "
+    )
+    if gap.get("names_held_anchor_id") is not None:
+        return line + (
+            f"names held head {gap['names_held_anchor_id']}, not the head before it in "
+            "period order"
+        )
+    return line + "is not the earlier head's, so at least one head between them is not held"
