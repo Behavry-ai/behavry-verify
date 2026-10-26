@@ -217,7 +217,8 @@ def test_resume_reads_period_start_from_content_not_file_names(tmp_path, builder
     (out / "aaaa.json").write_text(json.dumps(heads[3]))
     (out / "zzzz.json").write_text(json.dumps(heads[1]))
     with FeedServer(heads) as feed:
-        assert _collect(feed, out) == 0
+        # 0.9.0: heads[2] was never held, so the folder has a gap (AG-9 M-4).
+        assert _collect(feed, out) == 1
         assert feed.requests[0]["query"]["since"] == heads[3]["period_start"]
     names = set(_stored(out))
     assert names == {"aaaa.json", "zzzz.json", *(head_file_name(h) for h in heads[4:])}

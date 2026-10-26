@@ -23,12 +23,18 @@ Rules:
   is a conflict too: two records for one period;
 * with ``--trust-anchor``, a head that does not verify (digest, signature,
   TSA) is not saved and is reported;
+* after collecting, the heads held in the directory must link
+  (``docs/strategy/AG9-CONTRACTS.md`` section 5): a v2 or v3 head whose
+  ``previous_anchor_digest`` is not the preceding held head's digest is a
+  gap, reported naming both heads. The first held head, a v1 head and one
+  with no ``previous_anchor_digest`` start a segment;
 * the bearer token comes from an environment variable, never from argv, and
   is never printed. Redirects are refused, so it is never sent anywhere but
   ``--base-url``, and plain ``http://`` is accepted for a loopback host only.
 
-Exit codes: 0 everything collected verified or was not checked; 1 any conflict
-or unverified head; 2 usage, network or HTTP error.
+Exit codes: 0 everything collected verified or was not checked, and the held
+heads link; 1 any conflict, unverified head or gap; 2 usage, network or HTTP
+error.
 """
 from __future__ import annotations
 
@@ -49,7 +55,12 @@ from pathlib import Path
 from typing import Any
 
 from behavry_verify.anchor import AnchorError, validate_anchor
-from behavry_verify.audit_anchor import load_anchor_record_bytes, verify_audit_anchor
+from behavry_verify.audit_anchor import (
+    describe_head_gap,
+    find_head_gaps,
+    load_anchor_record_bytes,
+    verify_audit_anchor,
+)
 from behavry_verify.report import CheckStatus, TrustSource
 from behavry_verify.rfc3161 import load_pem_certificates
 
@@ -247,8 +258,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="behavry-verify collect-heads",
         description=(
             "Page a tenant's anchor heads feed (GET /api/v1/audit/anchors/heads) into "
-            "a directory, for --anchor-heads-dir. The only behavry-verify command that "
-            "uses the network."
+            "a directory, for --anchor-heads-dir, then check that the heads held there "
+            "link (a gap exits 1). The only behavry-verify command that uses the network."
         ),
     )
     parser.add_argument(
@@ -380,7 +391,15 @@ def _run(args: argparse.Namespace) -> int:
         since = next_since
 
     _report(tally, pages, out, checked=anchor is not None)
-    return EXIT_FINDINGS if tally.findings else EXIT_OK
+    # AG9-CONTRACTS section 5: the chain across everything held, not only
+    # what this run fetched, so a head withheld on an earlier run shows too.
+    try:
+        held = load_heads_dir(out)
+    except (OSError, ValueError) as exc:
+        raise CollectError(f"could not read --out to check the chain: {exc}") from None
+    gaps = find_head_gaps([record for _, record in held])
+    _report_gaps(gaps, len(held), out)
+    return EXIT_FINDINGS if tally.findings or gaps else EXIT_OK
 
 
 def _take(
@@ -438,6 +457,18 @@ def _take(
         return
     by_period.setdefault(start, set()).add(record.get("anchor_digest"))
     tally.saved.append(name)
+
+
+def _report_gaps(gaps: list[dict[str, Any]], held: int, out: Path) -> None:
+    if not gaps:
+        print(f"  chain: the {held} head(s) in {out} link, no gap")
+        return
+    print(
+        f"  {len(gaps)} GAP(S) in the chain of the {held} head(s) in {out} (the feed "
+        "withheld a head, or the folder is missing one):"
+    )
+    for gap in gaps:
+        print(f"    {describe_head_gap(gap)}")
 
 
 def _report(tally: _Tally, pages: int, out: Path, *, checked: bool) -> None:

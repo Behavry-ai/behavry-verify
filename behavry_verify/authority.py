@@ -50,6 +50,11 @@ It is built with the same helpers as the APR package, so checks 1 to 11 in
     verified head whose period overlaps a run anchor, the predecessor or
     another verified head, with a different digest, is a fork and fails.
 
+    Since 0.9.0 (Sprint AG-9, ``docs/strategy/AG9-CONTRACTS.md`` section 5),
+    the verified heads of each ``--anchor-heads-dir`` folder must link: a
+    v2/v3 head whose ``previous_anchor_digest`` is not the preceding held
+    head's digest is a gap and fails.
+
 Counterparts (repo ``Behavry-ai/behavry``):
 
   ``provenance_canonical_body`` -> ``backend/behavry/authority/provenance.py``
@@ -537,6 +542,7 @@ def check_provenance_anchoring(
     raw_public_key: bytes | None,
     tsa_roots: list[Any] | None,
     heads: list[dict[str, Any]] | None = None,
+    head_folders: list[tuple[str, list[int]]] | None = None,
 ) -> None:
     """Check 15: every anchor in ``anchors.json``, then classify each entry.
 
@@ -550,11 +556,18 @@ def check_provenance_anchoring(
     the package (``GET /api/v1/audit/anchors/head``, AG6-CONTRACTS section 2).
     A 1.6 report, or any report given a head, adds ``heads`` and
     ``head_note``; a 1.6 report adds ``predecessor``.
+
+    ``head_folders`` name the heads that came from one folder
+    (``--anchor-heads-dir``), as ``(name, indices into heads)``. Each folder's
+    verified heads must link (AG9-CONTRACTS section 5); a gap fails the check
+    and is a row in ``head_gaps``, which a report given a folder carries.
     """
     # Imported here: audit_anchor imports package, which imports this module.
     from behavry_verify.audit_anchor import (
         _parse_time,
         anchor_provenance_hashes,
+        describe_head_gap,
+        find_head_gaps,
         verify_audit_anchor,
     )
     from behavry_verify.package import _package_version_tuple
@@ -867,6 +880,21 @@ def check_provenance_anchoring(
         verified_heads.append((head, head_start, head_end))
         verified_index.append(index)
 
+    # AG9-CONTRACTS section 5: a folder of heads must link. Only verified heads
+    # count: one that does not verify is already a finding and is unused, and
+    # an unverified record must not be able to bridge a gap. A fork inside the
+    # folder is H2b above and is not reported again as a gap (find_head_gaps).
+    head_gaps: list[dict[str, Any]] = []
+    verified_set = set(verified_index)
+    for folder, indices in head_folders or []:
+        held = [heads[i] for i in indices if i in verified_set]
+        for gap in find_head_gaps(held):
+            head_gaps.append({"folder": folder, **gap})
+            failures.append(
+                f"anchor heads folder {folder}: {describe_head_gap(gap)}; a folder of heads "
+                "that does not link cannot vouch for completeness"
+            )
+
     # Classify each provenance entry of the package.
     first_start = _parse_time(exports[0].get("period_start")) if exports else None
     sealed = []
@@ -1044,6 +1072,8 @@ def check_provenance_anchoring(
         )
     if heads:
         report.provenance_anchoring["forks"] = forks
+    if head_folders:
+        report.provenance_anchoring["head_gaps"] = head_gaps
     if with_predecessor:
         report.provenance_anchoring["predecessor"] = predecessor_row
 
@@ -1134,6 +1164,11 @@ def check_provenance_anchoring(
         )
     elif with_predecessor:
         detail += f"; {NO_HEAD_NOTE}"
+    if head_folders:
+        detail += (
+            f"; the verified heads of {len(head_folders)} anchor heads folder(s) link, "
+            "with no gap"
+        )
     if uncovered_named:
         report.add_warn(
             check_id,
