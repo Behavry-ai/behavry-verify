@@ -54,6 +54,7 @@ from behavry_verify.rfc3161 import (
     validate_tsa_chain,
     verify_tsa_signature,
 )
+from behavry_verify.witness import WitnessOptions, check_record_witness
 
 __all__ = [
     "ANCHOR_SCHEMA",
@@ -212,8 +213,14 @@ def verify_audit_anchor(
     raw_public_key: bytes | None = None,
     trust_source: TrustSource = TrustSource.NONE,
     tsa_roots: list[x509.Certificate] | None = None,
+    witness: WitnessOptions | None = None,
 ) -> VerificationReport:
     """Verify one exported audit anchor offline and return a full report.
+
+    ``witness`` (AG-10) adds the Witness check for a standalone record: run
+    when the record carries a ``witness`` receipt or ``witness.require`` is
+    set. ``None`` adds nothing; a package's anchors are witnessed by check 16
+    instead.
 
     ``anchor`` is the issuing tenant's Behavry trust anchor (or pass
     ``raw_public_key``). ``tsa_roots`` are the TSA root certificates the
@@ -484,6 +491,10 @@ def verify_audit_anchor(
 
     # -- 5 to 7. The RFC 3161 token ---------------------------------------------
     _check_token(report, export, tsa, digest_hex, tsa_roots)
+
+    # -- 8. Witness receipt (AG-10) ----------------------------------------------
+    if witness is not None:
+        check_record_witness(report, export, witness, key)
     return report.finalize()
 
 

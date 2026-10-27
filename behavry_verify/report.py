@@ -165,6 +165,12 @@ class VerificationReport:
     # folder adds ``head_gaps`` (AG-9).
     provenance_anchoring: dict[str, Any] | None = None
 
+    # Check 16 (AG-10): each record's witness receipt (log index, integrated
+    # time, status, failed W checks). Present only when the check ran: package
+    # 1.7, a record carrying ``witness``, or ``--require-witness``. See
+    # :func:`behavry_verify.witness.check_witness`.
+    witness: dict[str, Any] | None = None
+
     trust_source: TrustSource = TrustSource.NONE
     verified_at: str = ""
     error: str | None = None
@@ -230,6 +236,10 @@ class VerificationReport:
     def to_dict(self) -> dict[str, Any]:
         body = asdict(self)
         body["checks"] = [c.to_dict() for c in self.checks]
+        if body.get("witness") is None:
+            # Absent rather than null, so a report without check 16 keeps the
+            # shape it had before AG-10.
+            body.pop("witness", None)
         body["trust_source"] = self.trust_source.value
         body["caveat"] = self.caveat
         return body
@@ -323,12 +333,55 @@ class VerificationReport:
                 )
             if pa.get("head_note"):
                 lines.append(f"  {'Anchor head'.ljust(width)}  {pa['head_note']}")
+        if self.witness:
+            lines.extend(self._witness_lines(width))
         lines.append("")
         lines.append(f"  {self.caveat}")
         if self.error:
             lines.append("")
             lines.append(f"  Error: {self.error}")
         return "\n".join(lines)
+
+    def _witness_lines(self, width: int) -> list[str]:
+        wi = self.witness or {}
+        lines: list[str] = []
+        name = "Witness".ljust(width)
+        if wi.get("trust_note"):
+            lines.append(f"  {name}  {wi['trust_note']}")
+        if wi.get("trust"):
+            for log in wi["trust"].get("logs") or []:
+                lines.append(
+                    f"  {'Witness log'.ljust(width)}  {log.get('log_id')} "
+                    f"({log.get('algorithm')}" + (
+                        f", {log['base_url']})" if log.get("base_url") else ")"
+                    )
+                )
+        if "witness_since" in wi:
+            lines.append(
+                f"  {'Witness since'.ljust(width)}  "
+                + (wi["witness_since"] or "none (the manifest requires no receipt)")
+            )
+        role_name = {"anchor": "anchor", "predecessor": "predecessor", "head": "anchor head"}
+        for row in wi.get("records") or []:
+            if row.get("status") == "absent":
+                continue
+            what = (
+                f"{role_name.get(row.get('role'), 'anchor')} {row.get('anchor_id')} "
+                f"({row.get('period_start')}..{row.get('period_end')})"
+            )
+            status = row.get("status")
+            if status == "missing":
+                state = "MISSING: required, none carried"
+            else:
+                logged = f"log index {row.get('log_index')} at {row.get('integrated_at')}"
+                if status == "verified":
+                    state = f"{logged}, verified"
+                elif status == "not_checked":
+                    state = f"{logged}, not checked"
+                else:
+                    state = f"{logged}, FAILED: " + ", ".join(row.get("failed_checks") or [])
+            lines.append(f"  {name}  {what}: {state}")
+        return lines
 
     def _signer_line(self) -> str | None:
         if not self.signer_kid:
