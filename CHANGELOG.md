@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.10.0
+
+Sprint AG-10, following Behavry's `docs/strategy/AG10-CONTRACTS.md` sections
+1, 3 and 4. Byte formats are those of Rekor v1.5.5.
+
+### Added
+
+- **Check 16, Witness.** An anchor record may carry `witness`: a receipt
+  showing that a DSSE envelope over its `anchor_digest`, signed by the
+  anchor's own key, was logged to a Rekor v1 transparency log. Each receipt is
+  checked offline:
+  - **W1 Inclusion.** The leaf's RFC 6962 inclusion proof reaches
+    `root_hash`, and a checkpoint (a signed note) line with the trusted log
+    key's hint verifies, for the same tree size and root.
+  - **W2 Binding.** The leaf is a canonical `dsse` 0.0.1 entry whose
+    `payloadHash` is SHA-256 of the anchor's digest, whose one verifier is the
+    anchor's signer key, and whose `envelopeHash` is SHA-256 of the stored
+    envelope; the envelope's signature verifies over its DSSE PAE.
+  - **W3 Prompt.** The SignedEntryTimestamp verifies, and the anchor was
+    logged between 300 s before and `--witness-window` seconds (default 7200)
+    after its period ended. An anchor logged later fails: a forgery made after
+    the fact is logged after the fact.
+  - **W4 Required.** In a package 1.7, every anchor in `anchors.json` and the
+    predecessor whose `period_start` is at or after the manifest's
+    `witness_since` must carry a receipt that passes. With
+    `--require-witness`, every anchor, the predecessor and every supplied head
+    must, whatever the manifest says.
+- **`--witness-trust FILE`**: Sigstore's `trusted_root.json` (its `tlogs`) or
+  one PEM public key, ECDSA P-256 or Ed25519. The log is picked by the
+  receipt's `log_id`, the hex SHA-256 of the key's DER. A `validFor` window in
+  the trusted root is enforced at the receipt's `integrated_time`.
+- **`--require-witness`** and **`--witness-window SECONDS`**.
+- **`--audit-anchor`** checks a record's receipt too, when it carries one or
+  under `--require-witness`.
+- The JSON report gains `witness` (present only when check 16 ran): the trust
+  root, counts, and one row per record with `role`, `log_index`,
+  `integrated_time`, `status` (`verified`, `failed`, `not_checked`,
+  `missing` or `absent`), `failed_checks` (W ids) and `findings`. The text
+  report adds a `Witness` line per receipt.
+
+### Unchanged
+
+- Without `--witness-trust`, receipts are reported as "witness not checked:
+  no log trust root supplied". That fails only under `--require-witness`; a
+  required receipt that is missing still fails, since its absence needs no
+  key to see.
+- Packages 1.6 and older whose records carry no `witness` report exactly as
+  before, with or without `--witness-trust`. A record that carries one is
+  checked whatever the package version.
+- The web page and `POST /api/v1/verify` take no log trust root yet, so a 1.7
+  package verified there reports its receipts as not checked.
+
 ## 0.9.0
 
 Sprint AG-9 (item M-4), following Behavry's `docs/strategy/AG9-CONTRACTS.md`

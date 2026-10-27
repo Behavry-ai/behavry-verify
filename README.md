@@ -58,6 +58,7 @@ If a result matters, get the trust anchor from the issuing tenant directly. Thei
 ✓ Assessment bundles valid      Minotaur's signed assessments, against its key (authority 1.3)
 i Authority lifecycle           which golden-path steps the history evidences (informational)
 ✓ Provenance anchored           each provenance entry is in a timestamped audit anchor (authority 1.4+)
+✓ Witness                       each anchor was logged promptly to a public append-only log (authority 1.7)
 ```
 
 Every check runs independently. Unlike a first-failure verifier, a broken hash chain still tells you whether the signature was good, because "signed by Behavry but missing an event" and "not signed at all" are entirely different findings.
@@ -226,6 +227,41 @@ Every v2 and v3 anchor signs `previous_anchor_digest`, the digest of the tenant'
 - Each folder is checked on its own. Heads given as separate `--anchor-head` files are not checked for gaps: they are usually a sparse sample, such as a head taken at verification time.
 - A feed that withholds the newest heads is not a gap, since nothing after them links back. A fresh head obtained later, or one read from the WORM bucket, closes that.
 
+### Witnessed in a public log (package 1.7)
+
+Every check above rests on evidence that Behavry or the tenant produced or kept. A party holding the signing key could re-sign a different anchor, get it timestamped, and plant it. A **witness receipt** adds a party neither controls: a public append-only transparency log (Sigstore's Rekor v1). When a tenant opts in, Behavry submits each anchor to the log as it is sealed, and the anchor record carries the log's receipt as `witness`. The receipt proves that the anchor was logged to that public log, and when: the log's signed `integratedTime` must fall shortly after the period ended. A forgery made later is either absent from the log or logged later, and fails.
+
+The log entry reveals only a SHA-256 hash, a signature and the public key that made it, never the anchor's bytes. Behavry signs a DSSE envelope whose payload is the anchor's hex `anchor_digest`, under the type `application/vnd.behavry.anchor-digest.v1`, with the anchor's own key.
+
+Check 16 verifies each receipt offline against the log keys you supply with `--witness-trust`, either Sigstore's `trusted_root.json` or one PEM public key (ECDSA P-256 or Ed25519):
+
+- **W1 Inclusion.** The entry is in the log: its RFC 6962 inclusion proof reaches the tree root, and the log's signed checkpoint commits to that root and tree size.
+- **W2 Binding.** The entry is this anchor's: it is a `dsse` entry for SHA-256 of the anchor's digest, its verifier key is the key that signed the anchor, and the envelope in the receipt is the one logged and verifies over its DSSE PAE.
+- **W3 Prompt.** The log's SignedEntryTimestamp verifies, and the anchor was logged no earlier than 300 s before its period ended and no later than `--witness-window` seconds after (default 7200, two hours).
+- **W4 Required.** A package 1.7 manifest states `witness_since`, when the tenant began witnessing. Every anchor in `anchors.json`, and the predecessor, whose period starts at or after it must carry a receipt that passes W1 to W3. A key holder controls the manifest, so an auditor who knows the tenant opted in should pass `--require-witness`: every anchor, the predecessor and every supplied head must then carry one, whatever the manifest says.
+
+A receipt is checked whenever a record carries one, in any package version, on `--anchor-head` and `--anchor-heads-dir` heads, and in `--audit-anchor` mode. Without `--witness-trust`, the check reports "witness not checked: no log trust root supplied", which fails only under `--require-witness`. A package 1.6 or older whose records carry no receipt reports exactly as before.
+
+The report's `witness` key holds one row per record:
+
+```json
+{
+  "witness": {
+    "trust": {"source": "trusted_root", "logs": [{"log_id": "...", "algorithm": "ecdsa-p256-sha256",
+              "base_url": "https://rekor.sigstore.dev", "valid_from": "...", "valid_until": null}]},
+    "trust_note": null, "required": false, "window_seconds": 7200, "witness_since": "...",
+    "verified": 5, "failed": 0, "not_checked": 0, "missing": 0, "absent": 0,
+    "records": [{"role": "anchor", "index": 0, "anchor_id": "...", "period_start": "...",
+                 "period_end": "...", "anchor_digest": "...", "required": true,
+                 "status": "verified", "log_index": 123, "integrated_time": 1761500000,
+                 "integrated_at": "...", "log_id": "...", "entry_id": "...",
+                 "failed_checks": [], "findings": []}]
+  }
+}
+```
+
+`role` is `anchor`, `predecessor` or `head`. `status` is `verified`, `failed`, `not_checked` (no trust root), `missing` (required, none carried) or `absent` (none carried, none required). `failed_checks` names the W checks that failed, and `findings` says why. What remains open: completeness against the log (searching the log for every entry under Behavry's key) is a later sprint, and until per-tenant signing keys exist an entry is linkable to the Behavry deployment, not to the tenant.
+
 ### Passing Minotaur's key
 
 Minotaur publishes its observer public key as a small JSON file. One key signs both its observations and its assessment bundles:
@@ -294,7 +330,7 @@ A `package_version` this tool cannot parse is treated as older than 1.1, so it t
 
 ### Web
 
-Go to [verify.behavry.ai](https://verify.behavry.ai), drop in the `.zip`, and optionally add the trust anchor, one or more observer key files (such as Minotaur's), your TSA roots and one or more anchor heads. A separate form on the same page verifies an audit anchor JSON.
+Go to [verify.behavry.ai](https://verify.behavry.ai), drop in the `.zip`, and optionally add the trust anchor, one or more observer key files (such as Minotaur's), your TSA roots and one or more anchor heads. A separate form on the same page verifies an audit anchor JSON. The web page and API take no log trust root yet: witness receipts are checked by the CLI.
 
 **Nothing you submit is stored, logged, or forwarded.** The package is verified in memory and discarded. It is someone's audit trail from a regulated environment; the only defensible retention policy is none.
 
@@ -342,6 +378,16 @@ A directory of heads, such as one kept by `collect-heads` (below): every `*.json
 ```bash
 behavry-verify --package authority-agent-123.zip --trust-anchor anchor.json \
                --observer-anchor minotaur-observer-key.json --anchor-heads-dir heads/
+```
+
+Authority package 1.7 with its witness receipts checked against the public log's key. Get `trusted_root.json` from Sigstore (for example from the `sigstore/root-signing` repository, or `cosign trusted-root create`), or pass the PEM public key of a private Rekor instance:
+
+```bash
+behavry-verify --package authority-agent-123.zip --trust-anchor anchor.json \
+               --witness-trust trusted_root.json --require-witness
+
+behavry-verify --package authority-agent-123.zip --trust-anchor anchor.json \
+               --witness-trust private-rekor.pem --witness-window 3600
 ```
 
 Audit anchor, optionally with your TSA roots. Repeat `--audit-anchor` to also walk a set for missing periods:
@@ -431,6 +477,7 @@ These modules must match the Behavry producer byte-for-byte, or valid evidence s
 - `behavry_verify/jcs.py` ↔ `backend/behavry/audit/args_digest.py` (RFC 8785, copied exactly, including its error behaviour)
 - `behavry_verify/authority.py` ↔ `backend/behavry/authority/provenance.py` and the assessment bundle form in Behavry's `docs/strategy/AG3-CONTRACTS.md` §1.2
 - `behavry_verify/audit_anchor.py` ↔ `backend/behavry/audit/anchoring.py` and `tools/verify_event.py --anchor` / `--anchor-chain`; the v3 form follows Behavry's `docs/strategy/AG4-CONTRACTS.md` §1 and §2
+- `behavry_verify/witness.py` ↔ Rekor v1.5.5 (`pkg/types/dsse/v0.0.1/entry.go`, `pkg/api/entries.go`, `pkg/verify/verify.go`, `pkg/util/signed_note.go`, `pkg/util/checkpoint.go`) and Behavry's `docs/strategy/AG10-CONTRACTS.md` §1, §3 and §4; `tests/rekor_fixture.py` is a fixture log that builds receipts in those byte formats, and is never presented as Rekor
 - check 15 in `behavry_verify/authority.py` ↔ `backend/behavry/authority/package.py` (package 1.4) and AG4-CONTRACTS §3 and §4; for package 1.5, AG5-CONTRACTS §1 to §3
 
 `behavry_verify/rfc3161.py` is a small DER reader for RFC 3161 tokens. `cryptography` has no TSP or CMS parser, and adding `asn1crypto` would double what an auditor has to install.
