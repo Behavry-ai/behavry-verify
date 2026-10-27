@@ -20,6 +20,7 @@ from behavry_verify import __version__
 from behavry_verify.anchor import AnchorError, validate_anchor, validate_observer_anchors
 from behavry_verify.audit_anchor import load_anchor_record_bytes, verify_audit_anchor
 from behavry_verify.fetch import FetchError, fetch_package
+from behavry_verify.keyhistory import trust_anchor_with_history
 from behavry_verify.package import (
     PackageError,
     load_package_from_bytes,
@@ -76,8 +77,16 @@ async def security_headers(request: Request, call_next):  # type: ignore[no-unty
 # ---------------------------------------------------------------------------
 
 
-def _parse_anchor(raw: str | None) -> dict[str, Any] | None:
+def _parse_anchor(raw: str | None, history_raw: str | None = None) -> dict[str, Any] | None:
+    """The trust anchor, extended by an untrusted key history when one is given.
+
+    A v2 anchor is resolved (its statements verified); ``history_raw`` is the
+    CLI's ``--key-history`` and needs a pinned v1 anchor.
+    """
+    has_history = bool(history_raw and history_raw.strip())
     if not raw or not raw.strip():
+        if has_history:
+            raise HTTPException(400, "key_history extends a pinned v1 trust_anchor")
         return None
     try:
         anchor = json.loads(raw)
@@ -87,7 +96,16 @@ def _parse_anchor(raw: str | None) -> dict[str, Any] | None:
         validate_anchor(anchor)
     except AnchorError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return anchor
+    history = None
+    if has_history:
+        try:
+            history = json.loads(str(history_raw))
+        except json.JSONDecodeError as exc:
+            raise HTTPException(400, f"key history is not valid JSON: {exc}") from exc
+    try:
+        return trust_anchor_with_history(anchor, history)
+    except AnchorError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 def _parse_observer_anchors(raw: str | None) -> list[dict[str, Any]]:
@@ -218,6 +236,7 @@ async def verify_endpoint(
     observer_anchor: Annotated[list[UploadFile] | None, File()] = None,
     tsa_roots: Annotated[str | None, Form()] = None,
     anchor_head: Annotated[list[UploadFile] | None, File()] = None,
+    key_history: Annotated[str | None, Form()] = None,
 ) -> JSONResponse:
     """Verify an evidence package supplied as an upload or by URL.
 
@@ -233,13 +252,16 @@ async def verify_endpoint(
     ``anchor_head`` is repeatable: anchor records the caller obtained from the
     tenant independently of the package (``GET /api/v1/audit/anchors/head``),
     as the CLI's ``--anchor-head``, each as JSON or gzipped JSON (decompressed here).
+    ``key_history`` is the JSON text of a tenant's later key history (a v2
+    document), extending a pinned v1 ``trust_anchor`` as the CLI's
+    ``--key-history`` does (AG-11).
     """
     if package is None and not package_url:
         raise HTTPException(400, "supply either a package file or a package_url")
     if package is not None and package_url:
         raise HTTPException(400, "supply a package file or a package_url, not both")
 
-    anchor = _parse_anchor(trust_anchor)
+    anchor = _parse_anchor(trust_anchor, key_history)
     observers = _parse_observer_anchors(observer_anchors)
     observers.extend(await _parse_observer_files(observer_anchor))
     roots = _parse_tsa_roots(tsa_roots)
@@ -267,6 +289,7 @@ async def verify_text_endpoint(
     observer_anchor: Annotated[list[UploadFile] | None, File()] = None,
     tsa_roots: Annotated[str | None, Form()] = None,
     anchor_head: Annotated[list[UploadFile] | None, File()] = None,
+    key_history: Annotated[str | None, Form()] = None,
 ) -> PlainTextResponse:
     """Same verification, rendered as the plain-text report (for CI use)."""
     if package is None:
@@ -275,7 +298,7 @@ async def verify_text_endpoint(
     observers.extend(await _parse_observer_files(observer_anchor))
     report = _verify(
         await _read_upload(package),
-        _parse_anchor(trust_anchor),
+        _parse_anchor(trust_anchor, key_history),
         observers,
         _parse_tsa_roots(tsa_roots),
         await _parse_anchor_heads(anchor_head),
@@ -290,6 +313,7 @@ async def verify_anchor_endpoint(
     audit_anchor: Annotated[UploadFile, File()],
     trust_anchor: Annotated[str | None, Form()] = None,
     tsa_roots: Annotated[str | None, Form()] = None,
+    key_history: Annotated[str | None, Form()] = None,
 ) -> JSONResponse:
     """Verify an audit anchor export (the RFC 3161 "when" proof).
 
@@ -304,7 +328,7 @@ async def verify_anchor_endpoint(
         export = load_anchor_record_bytes(data)
     except ValueError as exc:
         raise HTTPException(400, f"audit anchor: {exc}") from exc
-    anchor = _parse_anchor(trust_anchor)
+    anchor = _parse_anchor(trust_anchor, key_history)
     roots = _parse_tsa_roots(tsa_roots)
 
     source = TrustSource.SUPPLIED_ANCHOR if anchor is not None else TrustSource.NONE

@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.11.0
+
+Sprint AG-11, following Behavry's `docs/strategy/AG11-CONTRACTS.md` sections
+2, 3 and 4: per-tenant signing keys, rotation and key history.
+
+### Added
+
+- **Trust anchor v2** (`behavry.trust_anchor.v2`) as `--trust-anchor`. Every
+  key's window is rebuilt from the anchor's key statements
+  (`behavry.key_statement.v1`), never taken from the listed values, and every
+  statement's signatures are checked: a `succession` by both the predecessor
+  and the successor, a `compromise` by the successor and the anchor's
+  `deployment_kid`. An anchor whose statements do not all verify is refused.
+  The deployment key's `not_before` is null.
+- **`--key-history FILE`**, with a pinned v1 `--trust-anchor`: a later v2
+  document, treated as untrusted. A key in it is used only if a chain of
+  verifying statements reaches it from a pinned key; a compromise statement
+  is anchored on the deployment key, which must be in the pinned anchor.
+  Unreachable keys are reported and never used. The web API takes the same
+  input as the `key_history` form field.
+- **Validity windows**, whenever the keys come from a v2 history: a signature
+  by a key over a record dated outside the key's window fails. The date is the
+  signed timestamp: event `timestamp`, audit anchor `sealed_at`, provenance
+  entry and authorization record `timestamp`, package manifest `created_at`.
+  A record dated at or after the key's `compromised_since` is reported as
+  "untrusted (key compromised)", distinct from a bad signature. A manifest or
+  anchor signature outside its window is a failed `signature` check, not a
+  skipped one.
+- **Check 16 (witness)** resolves the anchor's signer key through the same
+  history, so W2 binds a receipt only to a key that was valid when the anchor
+  was sealed.
+- The JSON report gains `key_history` (only in the `v2` and `v1+history` trust
+  modes): `trust_mode`, each key with its recomputed window, status and
+  source, the statements and whether each verified, `unreachable_keys`,
+  `notes`, `window_failures` and `untrusted_signatures`. The text report adds
+  matching lines.
+- The published registry serves a v2 anchor file whole for any of its kids,
+  so its windows apply, and leaves its keys out of `/trust-anchor.json`.
+
+### Rules the contract left open, as implemented
+
+- A statement takes effect only when its predecessor is already trusted and
+  not yet succeeded, so the history is a single chain: a second successor of
+  the same key, or a statement that would reopen a closed window, fails.
+- A successor kid of the tenant form (`t-<8 hex>-ed25519-<16 hex>`) must carry
+  the statement's tenant and the first 16 hex characters of SHA-256 of its
+  public key. A compromise statement cannot revoke the deployment key.
+- A key in a v2 anchor that no statement introduces (other than the
+  deployment key) is reported as unreachable and not used.
+- Windows are half open: a key is valid from `not_before` inclusive to
+  `not_after` exclusive, and untrusted from `compromised_since` inclusive.
+
+### Unchanged
+
+- A v1 anchor on its own (`behavry.trust_anchor.v1` or
+  `behavry.apr_trust_anchor.v1`) behaves exactly as in 0.10.0: the kid must
+  match, no window is enforced, and the report has no `key_history`.
+- ECDSA P-256 and KMS-held keys are AG-12.
+
 ## 0.10.0
 
 Sprint AG-10, following Behavry's `docs/strategy/AG10-CONTRACTS.md` sections

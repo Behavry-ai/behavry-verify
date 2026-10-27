@@ -171,6 +171,14 @@ class VerificationReport:
     # :func:`behavry_verify.witness.check_witness`.
     witness: dict[str, Any] | None = None
 
+    # AG-11: the key history the signatures were checked against, when the
+    # trust anchor is v2 or a pinned v1 anchor plus ``--key-history``: every
+    # usable key and its recomputed window, the statements and whether each
+    # verified, unreachable keys, and the trust mode (``v2`` or
+    # ``v1+history``). Absent for a v1 anchor on its own, whose behaviour is
+    # unchanged. See :mod:`behavry_verify.keyhistory`.
+    key_history: dict[str, Any] | None = None
+
     trust_source: TrustSource = TrustSource.NONE
     verified_at: str = ""
     error: str | None = None
@@ -240,6 +248,8 @@ class VerificationReport:
             # Absent rather than null, so a report without check 16 keeps the
             # shape it had before AG-10.
             body.pop("witness", None)
+        if body.get("key_history") is None:
+            body.pop("key_history", None)
         body["trust_source"] = self.trust_source.value
         body["caveat"] = self.caveat
         return body
@@ -335,6 +345,8 @@ class VerificationReport:
                 lines.append(f"  {'Anchor head'.ljust(width)}  {pa['head_note']}")
         if self.witness:
             lines.extend(self._witness_lines(width))
+        if self.key_history:
+            lines.extend(self._key_history_lines(width))
         lines.append("")
         lines.append(f"  {self.caveat}")
         if self.error:
@@ -381,6 +393,48 @@ class VerificationReport:
                 else:
                     state = f"{logged}, FAILED: " + ", ".join(row.get("failed_checks") or [])
             lines.append(f"  {name}  {what}: {state}")
+        return lines
+
+    def _key_history_lines(self, width: int) -> list[str]:
+        kh = self.key_history or {}
+        lines: list[str] = []
+        unreachable = kh.get("unreachable_keys") or []
+        lines.append(
+            f"  {'Key history'.ljust(width)}  {kh.get('trust_mode')}: "
+            f"{len(kh.get('keys') or [])} key(s) usable, {kh.get('statements_verified', 0)} of "
+            f"{kh.get('statement_count', 0)} statement(s) verified, "
+            f"{len(unreachable)} unreachable"
+        )
+        for key in kh.get("keys") or []:
+            window = (
+                f"from {key.get('not_before') or 'the start'} to {key.get('not_after') or 'now'}"
+            )
+            if key.get("compromised_since"):
+                window += f", compromised since {key['compromised_since']}"
+            lines.append(
+                f"  {'Signing key'.ljust(width)}  {key.get('kid')} ({key.get('status')}), {window}"
+            )
+        for row in kh.get("statements") or []:
+            state = (
+                "verified"
+                if row.get("verified")
+                else "NOT VERIFIED: " + "; ".join(row.get("problems") or [])
+            )
+            lines.append(
+                f"  {'Key statement'.ljust(width)}  #{row.get('index')} {row.get('type')} "
+                f"{row.get('predecessor_kid')} -> {row.get('successor_kid')} at "
+                f"{row.get('effective_at')}, {state}"
+            )
+        for row in unreachable:
+            lines.append(
+                f"  {'Unreachable key'.ljust(width)}  {row.get('kid')}: {row.get('reason')}"
+            )
+        for note in kh.get("notes") or []:
+            lines.append(f"  {'Key history'.ljust(width)}  {note}")
+        for row in kh.get("untrusted_signatures") or []:
+            lines.append(f"  {'Key compromised'.ljust(width)}  {row.get('detail')}")
+        for row in kh.get("window_failures") or []:
+            lines.append(f"  {'Key window'.ljust(width)}  {row.get('detail')}")
         return lines
 
     def _signer_line(self) -> str | None:
