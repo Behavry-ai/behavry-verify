@@ -262,6 +262,27 @@ The report's `witness` key holds one row per record:
 
 `role` is `anchor`, `predecessor` or `head`. `status` is `verified`, `failed`, `not_checked` (no trust root), `missing` (required, none carried) or `absent` (none carried, none required). `failed_checks` names the W checks that failed, and `findings` says why. What remains open: completeness against the log (searching the log for every entry under Behavry's key) is a later sprint, and until per-tenant signing keys exist an entry is linkable to the Behavry deployment, not to the tenant.
 
+### Key rotation and key history (0.11.0)
+
+From Behavry's AG-11 each tenant signs with its own Ed25519 key, and the key can rotate. Every change is a **key statement** (`behavry.key_statement.v1`) that names the predecessor and the successor and the time it takes effect:
+
+- a `succession` (a rotation, or the tenant's first key, introduced from the deployment key with reason `infrastructure_migration`) is signed by **both** keys, so neither key alone can introduce the other;
+- a `compromise` is signed by the successor and the **deployment key**, since the compromised key's own signature proves nothing, and it marks the old key compromised from `compromised_since`.
+
+A statement closes the predecessor's window at `effective_at` and opens the successor's there. The verifier recomputes every window from the statements and never trusts windows listed beside them. Then, for every signature it checks, the record's signed date must fall inside the signing key's window: an event's `timestamp`, an audit anchor's `sealed_at`, a provenance entry's or authorization record's `timestamp`, a manifest's `created_at`. A record signed by the new key but dated before the rotation fails, and so does one signed by the old key after it. A record dated at or after a key's `compromised_since` is reported as **untrusted (key compromised)**, distinct from a bad signature; everything that key signed earlier still verifies.
+
+There are two ways to give the verifier a key history:
+
+| You pass | Trust mode | What is trusted |
+|---|---|---|
+| `--trust-anchor` a v1 anchor | `v1` | Exactly as before 0.11.0: the kid must match, no window is enforced, and the report has no `key_history`. |
+| `--trust-anchor` a v2 anchor (`behavry.trust_anchor.v2`) | `v2` | The anchor as a whole, as a v1 anchor is. Every statement in it must verify, or the anchor is refused (exit 2). |
+| `--trust-anchor` a pinned v1 anchor **and** `--key-history` a v2 document | `v1+history` | Only the pinned anchor. The history is untrusted: a key in it is used only if a chain of verifying statements reaches it from a pinned key (or, for a compromise statement, from the deployment key, which must be in the pinned anchor). Any other key is reported as unreachable and never used. |
+
+The third row is for an auditor who pinned a tenant's anchor before the tenant rotated: fetch the tenant's current history (`GET /api/v1/public/tenants/{tenant_id}/signing-keys`, or the admin's `trust-anchor-v2.json`) and pass it with the anchor you already hold. No new trust decision is needed, because every new key is vouched for by one you already trust.
+
+The report's `key_history` key (present only in the `v2` and `v1+history` modes) lists each usable key with its recomputed window and status (`active`, `retired`, `revoked`) and where it came from (`pinned`, `anchor`, `history`); each statement and whether it verified, with the problems when not; the unreachable keys and why; and the signatures that failed a window (`window_failures`) or fell after a compromise (`untrusted_signatures`). The text report adds `Key history`, `Signing key`, `Key statement`, `Unreachable key`, `Key compromised` and `Key window` lines.
+
 ### Passing Minotaur's key
 
 Minotaur publishes its observer public key as a small JSON file. One key signs both its observations and its assessment bundles:
@@ -390,6 +411,15 @@ behavry-verify --package authority-agent-123.zip --trust-anchor anchor.json \
                --witness-trust private-rekor.pem --witness-window 3600
 ```
 
+A tenant that rotated its signing key after you pinned its anchor: pass its later key history with the pinned anchor (see "Key rotation and key history"), or pass a v2 anchor on its own:
+
+```bash
+behavry-verify --package apr.zip --trust-anchor pinned-anchor.json \
+               --key-history signing-keys.json
+
+behavry-verify --package apr.zip --trust-anchor trust-anchor-v2.json
+```
+
 Audit anchor, optionally with your TSA roots. Repeat `--audit-anchor` to also walk a set for missing periods:
 
 ```bash
@@ -437,6 +467,8 @@ curl -X POST https://verify.behavry.ai/api/v1/verify \
 ```
 
 `anchor_head` is a file field too, and may repeat, like `--anchor-head`. It takes the same `.json` and `.json.gz` forms; the server decompresses a gzipped one. `POST /api/v1/verify.txt` takes it as well. There is no directory field: to send a collected directory, repeat `anchor_head` once per file (for example `for f in heads/*.json; do args+=(-F "anchor_head=@$f"); done`). The service never fetches heads itself.
+
+`key_history` is the JSON text of a v2 key history, extending a pinned v1 `trust_anchor` like `--key-history`; every verify endpoint takes it. A v2 `trust_anchor` whose statements do not verify, or a `key_history` without a v1 `trust_anchor`, is a `400`.
 
 `observer_anchor` is a file field and may repeat, one observer key file each, like `--observer-anchor`. The older `observer_anchors` field (JSON text of one anchor or a list) still works, and both are combined.
 
@@ -494,7 +526,7 @@ The AG-4 v3 anchors, 1.4 packages and AG-5 1.5 packages are built in-test by `te
 
 ## Publishing a trust anchor
 
-Anchors in `anchors/*.json` are served from `/trust-anchor.json`. The web API also uses them to pick a key for a package or audit anchor that arrives without one, matched by `signer_kid`, and it labels that result as the weaker path. They are committed files, not runtime state, so the set of published keys is auditable through git history. The registry is empty until a tenant consents. To publish one, open a PR adding the tenant's exported anchor, following [anchors/README.md](anchors/README.md). Never add a private key: an anchor contains public keys only.
+Anchors in `anchors/*.json` are served from `/trust-anchor.json`. The web API also uses them to pick a key for a package or audit anchor that arrives without one, matched by `signer_kid`, and it labels that result as the weaker path. They are committed files, not runtime state, so the set of published keys is auditable through git history. The registry is empty until a tenant consents. To publish one, open a PR adding the tenant's exported anchor, following [anchors/README.md](anchors/README.md). Never add a private key: an anchor contains public keys only. A v2 anchor file is served whole for any of its kids, so its windows still apply, and its keys are left out of the aggregate `/trust-anchor.json`, where they would appear without their statements.
 
 ---
 
