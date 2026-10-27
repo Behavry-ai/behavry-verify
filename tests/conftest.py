@@ -1256,3 +1256,58 @@ class PredecessorAuthorityPackageBuilder(ChainedAuthorityPackageBuilder):
 @pytest.fixture
 def predecessor_builder() -> PredecessorAuthorityPackageBuilder:
     return PredecessorAuthorityPackageBuilder()
+
+
+# ---------------------------------------------------------------------------
+# Authority evidence package 1.7: anchors witnessed in a log (AG-10)
+# ---------------------------------------------------------------------------
+
+#: Leaves ``witness_since`` out of the manifest altogether.
+OMIT = object()
+
+
+class WitnessedAuthorityPackageBuilder(PredecessorAuthorityPackageBuilder):
+    """A 1.7 authority package: the 1.6 package with a witness receipt on each anchor.
+
+    Every run anchor and the predecessor are logged to ``log`` (a
+    :class:`tests.rekor_fixture.FixtureLog`, ECDSA P-256 unless given) 60 s
+    after their period ends. ``witness_since`` defaults to the first run
+    anchor's ``period_start``, so the run is required to be witnessed and the
+    predecessor is not (it is still checked, since it carries a receipt).
+    """
+
+    authority_version = "1.7"
+
+    def __init__(
+        self,
+        *,
+        log: Any | None = None,
+        witness_since: Any = "first",
+        **kwargs: Any,
+    ) -> None:
+        from tests.rekor_fixture import FixtureLog
+
+        super().__init__(**kwargs)
+        self.log = log if log is not None else FixtureLog()
+        self.witness_since = (
+            self.anchors[0]["period_start"] if witness_since == "first" else witness_since
+        )
+        for record in [self.predecessor, *self.anchors]:
+            if record is not None:
+                self.witness(record)
+
+    def witness(self, record: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        """Log ``record`` and attach its receipt, outside its signed bytes."""
+        record["witness"] = self.log.log_anchor(record, self.private_key, self.kid, **kwargs)
+        return record
+
+    def extra_manifest(self, data_files: dict[str, Any]) -> dict[str, Any]:
+        extra = super().extra_manifest(data_files)
+        if self.witness_since is not OMIT:
+            extra = {"witness_since": self.witness_since, **extra}
+        return extra
+
+
+@pytest.fixture
+def witnessed_builder() -> WitnessedAuthorityPackageBuilder:
+    return WitnessedAuthorityPackageBuilder()

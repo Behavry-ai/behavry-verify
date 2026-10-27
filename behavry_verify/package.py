@@ -73,6 +73,7 @@ from behavry_verify.hashbody import (
 )
 from behavry_verify.merkle import merkle_root
 from behavry_verify.report import TrustSource, VerificationReport
+from behavry_verify.witness import WitnessOptions, check_witness
 
 __all__ = [
     "MAX_MEMBER_COUNT",
@@ -352,6 +353,7 @@ def verify_package(
     tsa_roots: list[Any] | None = None,
     anchor_heads: list[dict[str, Any]] | None = None,
     anchor_head_dirs: list[tuple[str, list[dict[str, Any]]]] | None = None,
+    witness: WitnessOptions | None = None,
 ) -> VerificationReport:
     """Verify an assembled evidence package and return a full report.
 
@@ -376,6 +378,11 @@ def verify_package(
     must link (AG9-CONTRACTS section 5): a gap fails check 15. Heads passed in
     ``anchor_heads`` are not checked for gaps, since they are usually a sparse
     sample.
+
+    ``witness`` (AG-10) carries the log trust root, ``--require-witness`` and
+    the promptness window for check 16 (see :func:`behavry_verify.witness.check_witness`).
+    Check 16 runs on package 1.7, on any package whose anchor records or heads
+    carry a ``witness``, and under ``require``; otherwise nothing is added.
     """
     report = VerificationReport(trust_source=trust_source)
     heads = list(anchor_heads or [])
@@ -569,6 +576,10 @@ def verify_package(
         check_provenance_anchoring(
             report, components, manifest, anchor, raw_public_key, tsa_roots,
             heads=heads, head_folders=head_folders,
+        )
+        # -- 16. Witness (1.7, or any record carrying a receipt) --------------
+        check_witness(
+            report, components, manifest, anchor, raw_public_key, heads, witness
         )
 
     return report.finalize()

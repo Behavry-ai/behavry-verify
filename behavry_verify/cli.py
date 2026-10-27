@@ -33,6 +33,17 @@ folder's heads to link (a gap between two of them fails check 15). Separate
 ``--anchor-head`` files are not checked for gaps: they are usually a sparse
 sample.
 
+Anchors witnessed in a public transparency log (AG-10, package 1.7) carry a
+``witness`` receipt. ``--witness-trust FILE`` (Sigstore's ``trusted_root.json``
+or the log's PEM public key) checks each receipt offline: the entry is in the
+log, it is bound to the anchor's digest and signer key, and it was logged no
+later than ``--witness-window SECONDS`` (default 7200) after the period ended.
+``--require-witness`` requires a receipt on every anchor and head.
+
+    behavry-verify --package authority-<agent_id>.zip \\
+                   --trust-anchor behavry-trust-anchor.json \\
+                   --witness-trust trusted_root.json [--require-witness]
+
 Collecting heads is the one networked command, kept separate so that every
 verification above stays offline (see :mod:`behavry_verify.collect`):
 
@@ -68,6 +79,12 @@ from behavry_verify.collect import collect_heads_main, load_heads_dir
 from behavry_verify.package import PackageError, load_package_from_path, verify_package
 from behavry_verify.report import TrustSource, VerificationReport
 from behavry_verify.rfc3161 import load_pem_certificates
+from behavry_verify.witness import (
+    DEFAULT_WINDOW_SECONDS,
+    WitnessOptions,
+    WitnessTrustError,
+    load_witness_trust,
+)
 
 EXIT_VERIFIED = 0
 EXIT_NOT_VERIFIED = 1
@@ -168,6 +185,36 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--witness-trust",
+        type=Path,
+        metavar="FILE",
+        help=(
+            "The transparency log's public key: Sigstore's trusted_root.json, or one "
+            "PEM public key (ECDSA P-256 or Ed25519). Checks each anchor's witness "
+            "receipt (check 16): inclusion in the log, binding to the anchor, and that "
+            "it was logged promptly. Without it, receipts are reported as not checked."
+        ),
+    )
+    parser.add_argument(
+        "--require-witness",
+        action="store_true",
+        help=(
+            "Every anchor, the run's predecessor and every supplied head (or the "
+            "--audit-anchor record) must carry a witness receipt that verifies, "
+            "whatever the package manifest says. Needs --witness-trust."
+        ),
+    )
+    parser.add_argument(
+        "--witness-window",
+        type=int,
+        default=DEFAULT_WINDOW_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "How long after its period ends an anchor may be logged and still count as "
+            f"prompt (default {DEFAULT_WINDOW_SECONDS})."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit the machine-readable report instead of the text report",
@@ -231,6 +278,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: could not read TSA roots {args.tsa_roots}: {exc}", file=sys.stderr)
             return EXIT_USAGE
 
+    if args.witness_window < 0:
+        print("error: --witness-window must be zero or more seconds", file=sys.stderr)
+        return EXIT_USAGE
+    witness_trust = None
+    if args.witness_trust is not None:
+        try:
+            witness_trust = load_witness_trust(args.witness_trust.read_bytes())
+        except (OSError, WitnessTrustError) as exc:
+            print(
+                f"error: could not read witness trust root {args.witness_trust}: {exc}",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
+    witness = WitnessOptions(
+        trust=witness_trust, require=args.require_witness, window=args.witness_window
+    )
+
     heads: list[dict] = []
     head_dirs: list[tuple[str, list[dict]]] = []
     for path in args.anchor_head:
@@ -256,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return EXIT_USAGE
-        return _run_audit_anchors(args, anchor, raw_public_key, trust_source, roots)
+        return _run_audit_anchors(args, anchor, raw_public_key, trust_source, roots, witness)
 
     try:
         components = load_package_from_path(args.package)
@@ -273,6 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         tsa_roots=roots,
         anchor_heads=heads,
         anchor_head_dirs=head_dirs,
+        witness=witness,
     )
 
     if args.json:
@@ -288,6 +353,7 @@ def _run_audit_anchors(
     raw_public_key: bytes | None,
     trust_source: TrustSource,
     roots: list | None,
+    witness: WitnessOptions,
 ) -> int:
     exports: list[tuple[Path, dict]] = []
     for path in args.audit_anchor:
@@ -308,6 +374,7 @@ def _run_audit_anchors(
                 raw_public_key=raw_public_key,
                 trust_source=trust_source,
                 tsa_roots=roots,
+                witness=witness,
             ),
         )
         for path, export in exports
