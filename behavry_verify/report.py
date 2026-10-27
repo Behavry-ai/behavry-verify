@@ -412,7 +412,8 @@ class VerificationReport:
             if key.get("compromised_since"):
                 window += f", compromised since {key['compromised_since']}"
             lines.append(
-                f"  {'Signing key'.ljust(width)}  {key.get('kid')} ({key.get('status')}), {window}"
+                f"  {'Signing key'.ljust(width)}  {key.get('kid')} "
+                f"[{key.get('algorithm') or 'ed25519'}] ({key.get('status')}), {window}"
             )
         for row in kh.get("statements") or []:
             state = (

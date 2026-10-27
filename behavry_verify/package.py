@@ -30,17 +30,12 @@ predecessor are marked SKIPPED rather than passed.
 """
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import io
 import json
 import zipfile
 from pathlib import Path
 from typing import Any
-
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from behavry_verify.anchor import (
     AnchorError,
@@ -72,6 +67,7 @@ from behavry_verify.hashbody import (
     recompute_observation_event_hash,
 )
 from behavry_verify.keyhistory import KeyWindowError, attach_history, history_start
+from behavry_verify.keys import algorithm_label, algorithm_of, verify_signature
 from behavry_verify.merkle import merkle_root
 from behavry_verify.report import TrustSource, VerificationReport
 from behavry_verify.witness import WitnessOptions, check_witness
@@ -221,16 +217,9 @@ def load_package_from_path(path: Path) -> PackageComponents:
 # ---------------------------------------------------------------------------
 
 
-def _verify_ed25519(public_key: bytes, signature_b64: str, payload: bytes) -> bool:
-    try:
-        signature = base64.b64decode(signature_b64, validate=True)
-    except (binascii.Error, ValueError):
-        return False
-    try:
-        Ed25519PublicKey.from_public_bytes(public_key).verify(signature, payload)
-    except (InvalidSignature, ValueError):
-        return False
-    return True
+def _verify_signature(public_key: bytes, signature_b64: str, payload: bytes) -> bool:
+    """Check a base64 signature with the key's own algorithm (Ed25519 or ECDSA P-256)."""
+    return verify_signature(public_key, signature_b64, payload)
 
 
 def _event_payload(event: dict[str, Any]) -> bytes:
@@ -443,7 +432,7 @@ def verify_package(
     elif not manifest.get("signature"):
         report.add_fail("signature", "Signature valid", "manifest carries no signature")
     else:
-        signature_ok = _verify_ed25519(
+        signature_ok = _verify_signature(
             public_key,
             manifest["signature"],
             canonical_package_manifest_bytes(manifest),
@@ -452,7 +441,8 @@ def verify_package(
             report.add_pass(
                 "signature",
                 "Signature valid",
-                f"Ed25519 over the canonical manifest, key {report.signer_kid or 'unknown'}",
+                f"{algorithm_label(algorithm_of(public_key))} over the canonical manifest, "
+                f"key {report.signer_kid or 'unknown'}",
             )
         else:
             report.add_fail(
@@ -697,7 +687,7 @@ def _check_event_signatures(
                 continue
         else:
             key = raw_public_key if raw_public_key is not None else manifest_key  # type: ignore[assignment]
-        if not _verify_ed25519(key, str(event["signature"]), _event_payload(event)):
+        if not _verify_signature(key, str(event["signature"]), _event_payload(event)):
             failures.append(f"event #{index} ({event.get('id')!r}) signature failed")
 
     if not failures:
@@ -986,7 +976,7 @@ def _check_authorization_records(
             tenant_id=record.get("tenant_id"),
             agent_id=record.get("agent_id"),
         )
-        if not _verify_ed25519(key, str(signature), payload):
+        if not _verify_signature(key, str(signature), payload):
             failures.append(f"record {ident} signature failed")
 
     for event in referencing:
@@ -1085,7 +1075,7 @@ def _check_observations(
             )
             continue
         body = observation_canonical_body(observation, decision_event_hash=decision_hash)
-        if not _verify_ed25519(
+        if not _verify_signature(
             bytes.fromhex(observer["public_key_hex"]),
             str(observation.get("observer_signature") or ""),
             body.encode("utf-8"),

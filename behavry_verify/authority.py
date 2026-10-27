@@ -160,10 +160,10 @@ def bundle_digest(bundle: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _verify_ed25519_b64(public_key: bytes, signature_b64: str, payload: bytes) -> bool:
-    from behavry_verify.package import _verify_ed25519
+def _verify_signature_b64(public_key: bytes, signature_b64: str, payload: bytes) -> bool:
+    from behavry_verify.package import _verify_signature
 
-    return _verify_ed25519(public_key, signature_b64, payload)
+    return _verify_signature(public_key, signature_b64, payload)
 
 
 def _entries(components: dict[str, Any]) -> tuple[list[dict[str, Any]] | None, Any]:
@@ -250,7 +250,7 @@ def check_provenance(
                     tenant_id=entry.get("tenant_id"),
                     agent_id=entry.get("agent_id"),
                 )
-                if key is None or not _verify_ed25519_b64(key, str(signature), payload):
+                if key is None or not _verify_signature_b64(key, str(signature), payload):
                     failures.append(f"entry {ident} signature failed")
         previous = entry.get("entry_hash")
 

@@ -46,8 +46,9 @@ from cryptography import x509
 
 from behavry_verify.anchor import AnchorError, select_key_for_timestamp
 from behavry_verify.keyhistory import KeyWindowError, attach_history, history_start
+from behavry_verify.keys import algorithm_label, algorithm_of
 from behavry_verify.merkle import merkle_root
-from behavry_verify.package import _event_payload, _verify_ed25519
+from behavry_verify.package import _event_payload, _verify_signature
 from behavry_verify.report import TrustSource, VerificationReport
 from behavry_verify.rfc3161 import (
     DERError,
@@ -421,11 +422,12 @@ def verify_audit_anchor(
             "Anchor signature valid",
             report.error or "no trust anchor or public key available",
         )
-    elif _verify_ed25519(key, str(export["signature"]), canonical):
+    elif _verify_signature(key, str(export["signature"]), canonical):
         report.add_pass(
             "signature",
             "Anchor signature valid",
-            f"Ed25519 over the canonical anchor bytes, key {export.get('signer_kid') or 'unknown'}",
+            f"{algorithm_label(algorithm_of(key))} over the canonical anchor bytes, "
+            f"key {export.get('signer_kid') or 'unknown'}",
         )
     else:
         report.add_fail(
@@ -470,7 +472,7 @@ def verify_audit_anchor(
                 except AnchorError as exc:
                     failures.append(f"event #{index} ({event.get('id')!r}): {exc}")
                     continue
-            if event_key is None or not _verify_ed25519(
+            if event_key is None or not _verify_signature(
                 event_key, str(event["signature"]), _event_payload(candidate)
             ):
                 failures.append(f"event #{index} ({event.get('id')!r}) signature failed")
@@ -626,7 +628,7 @@ def _check_provenance(
             tenant_id=export.get("tenant_id"),
             agent_id=record.get("agent_id"),
         )
-        if key is None or not _verify_ed25519(key, str(record["signature_b64"]), payload):
+        if key is None or not _verify_signature(key, str(record["signature_b64"]), payload):
             failures.append(f"record #{index} ({record.get('id')!r}) signature failed")
     if failures:
         extra = f" (+{len(failures) - 1} more)" if len(failures) > 1 else ""

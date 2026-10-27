@@ -26,8 +26,9 @@ Checks, each reported on its own:
   and a checkpoint line signed by the trusted log key commits to that root
   and tree size.
 * **W2 Binding.** The leaf is a ``dsse`` entry for SHA-256 of the anchor's
-  digest, its one verifier is the anchor's signer key, and the stored envelope
-  hashes to the leaf's ``envelopeHash`` and verifies over its DSSE PAE.
+  digest, its one verifier is the anchor's signer key (Ed25519, or ECDSA P-256
+  compared as SPKI DER), and the stored envelope hashes to the leaf's
+  ``envelopeHash`` and verifies over its DSSE PAE with that key's algorithm.
 * **W3 Prompt.** The SignedEntryTimestamp verifies, and the anchor was logged
   no earlier than five minutes before its period ended and no later than
   ``window`` seconds after.
@@ -54,6 +55,14 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from behavry_verify.jcs import NotCanonicalizableError, canonical_json
+from behavry_verify.keys import (
+    PublicKey,
+    algorithm_label,
+    algorithm_of,
+    public_key_from_pem,
+    same_public_key,
+    verify_signature_bytes,
+)
 
 __all__ = [
     "DEFAULT_WINDOW_SECONDS",
@@ -456,8 +465,8 @@ def verify_receipt(
 ) -> dict[str, Any]:
     """Run W1 to W3 on one anchor record's ``witness`` receipt.
 
-    ``signer_key`` is the raw Ed25519 key that verifies the anchor (the trust
-    anchor's key for its ``signer_kid``). Returns a row: ``status``
+    ``signer_key`` is the key that verifies the anchor (the trust anchor's key
+    for its ``signer_kid``), Ed25519 or ECDSA P-256 as its entry says. Returns a row: ``status``
     (``verified`` or ``failed``), ``log_index``, ``integrated_time``,
     ``failed_checks`` (the W ids that failed) and ``findings`` (why).
     """
@@ -715,12 +724,18 @@ def _check_binding(
                 sig_in_leaf = sigs[0].get("signature")
                 verifier = _verifier_key(sigs[0].get("verifier"))
                 if verifier is None:
-                    fail("W2", "the leaf's verifier is not a base64 PEM Ed25519 public key")
-                elif signer_key is not None and verifier != signer_key:
+                    fail(
+                        "W2",
+                        "the leaf's verifier is not a base64 PEM Ed25519 or ECDSA P-256 "
+                        "public key",
+                    )
+                elif signer_key is not None and not same_public_key(verifier, signer_key):
                     fail(
                         "W2",
                         "the leaf's verifier is not the anchor's signer key: the entry was "
-                        "logged by another key",
+                        f"logged by another key (an {algorithm_label(verifier.algorithm)} "
+                        f"verifier, the anchor's key is "
+                        f"{algorithm_label(algorithm_of(signer_key))})",
                     )
 
     envelope = receipt.get("envelope")
@@ -757,29 +772,30 @@ def _check_binding(
     except (binascii.Error, ValueError):
         fail("W2", "the envelope's signature is not base64")
         return
-    if signer_key is not None and isinstance(payload_type, str):
-        try:
-            Ed25519PublicKey.from_public_bytes(signer_key).verify(
-                sig, dsse_pae(payload_type, payload)
-            )
-        except (InvalidSignature, ValueError):
-            fail(
-                "W2",
-                "the envelope's signature does not verify over its DSSE PAE under the "
-                "anchor's signer key",
-            )
+    # The anchor key's own algorithm (AG12-CONTRACTS section 4), never the
+    # verifier's or the signature's.
+    if (
+        signer_key is not None
+        and isinstance(payload_type, str)
+        and not verify_signature_bytes(signer_key, sig, dsse_pae(payload_type, payload))
+    ):
+        fail(
+            "W2",
+            "the envelope's signature does not verify over its DSSE PAE under the "
+            "anchor's signer key",
+        )
 
 
-def _verifier_key(value: Any) -> bytes | None:
-    """The raw Ed25519 key in a Rekor ``verifier`` (base64 of a PEM public key)."""
+def _verifier_key(value: Any) -> PublicKey | None:
+    """The key in a Rekor ``verifier`` (base64 of a PKIX PEM public key).
+
+    Ed25519 (raw bytes) or ECDSA P-256 (SPKI DER); anything else is ``None``.
+    """
     try:
         pem = _b64(value)
-        key = serialization.load_pem_public_key(pem)
     except (binascii.Error, ValueError, TypeError):
         return None
-    if not isinstance(key, Ed25519PublicKey):
-        return None
-    return key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    return public_key_from_pem(pem)
 
 
 def _finish(row: dict[str, Any], findings: list[tuple[str, str]]) -> dict[str, Any]:
