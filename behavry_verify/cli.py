@@ -18,6 +18,17 @@ verification core means they cannot.
                    --trust-anchor behavry-trust-anchor.json \\
                    [--tsa-roots your-tsa-roots.pem]
 
+From AG-11 a tenant's signing key can rotate. ``--trust-anchor`` also takes a
+``behavry.trust_anchor.v2`` anchor (every key the tenant has used, with the
+signed key statements between them). A v1 anchor pinned before a rotation is
+extended with ``--key-history FILE``, a v2 document treated as untrusted: a key
+in it is used only if verifying statements reach it from the pinned anchor.
+With either, every signature must fall inside its key's window, and one dated
+at or after a key's compromise is reported as untrusted (key compromised).
+
+    behavry-verify --package apr-APR-2026-001942.zip \\
+                   --trust-anchor pinned-v1.json --key-history signing-keys.json
+
 ``--audit-anchor`` is repeatable: given two or more exports for one tenant, each
 is verified and then the AUD-LINK back-pointers are walked to report a period
 missing from the set.
@@ -76,6 +87,7 @@ from behavry_verify.audit_anchor import (
     verify_audit_anchor,
 )
 from behavry_verify.collect import collect_heads_main, load_heads_dir
+from behavry_verify.keyhistory import trust_anchor_with_history
 from behavry_verify.package import PackageError, load_package_from_path, verify_package
 from behavry_verify.report import TrustSource, VerificationReport
 from behavry_verify.rfc3161 import load_pem_certificates
@@ -131,6 +143,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--public-key",
         type=str,
         help="Base64-encoded 32-byte raw Ed25519 public key (bypasses the anchor)",
+    )
+    parser.add_argument(
+        "--key-history",
+        type=Path,
+        metavar="FILE",
+        help=(
+            "A tenant's later key history (a behavry.trust_anchor.v2 document, from "
+            "GET /api/v1/public/tenants/{tenant_id}/signing-keys), to extend a pinned v1 "
+            "--trust-anchor across key rotations. It is untrusted: a key in it is used "
+            "only if a chain of verifying key statements reaches it from the pinned "
+            "anchor, and every signature must then fall inside its key's window."
+        ),
     )
     parser.add_argument(
         "--observer-anchor",
@@ -237,12 +261,27 @@ def main(argv: list[str] | None = None) -> int:
     raw_public_key = None
     trust_source = TrustSource.NONE
 
+    if args.key_history is not None and args.trust_anchor is None:
+        print("error: --key-history extends a pinned v1 --trust-anchor", file=sys.stderr)
+        return EXIT_USAGE
     if args.trust_anchor is not None:
         try:
             anchor = json.loads(args.trust_anchor.read_text(encoding="utf-8"))
             validate_anchor(anchor)
         except (OSError, json.JSONDecodeError, AnchorError) as exc:
             print(f"error: could not read trust anchor: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        history = None
+        if args.key_history is not None:
+            try:
+                history = json.loads(args.key_history.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"error: could not read key history: {exc}", file=sys.stderr)
+                return EXIT_USAGE
+        try:
+            anchor = trust_anchor_with_history(anchor, history)
+        except AnchorError as exc:
+            print(f"error: could not use key history: {exc}", file=sys.stderr)
             return EXIT_USAGE
         trust_source = TrustSource.SUPPLIED_ANCHOR
     else:

@@ -71,6 +71,7 @@ from behavry_verify.hashbody import (
     recompute_decision_event_hash,
     recompute_observation_event_hash,
 )
+from behavry_verify.keyhistory import KeyWindowError, attach_history, history_start
 from behavry_verify.merkle import merkle_root
 from behavry_verify.report import TrustSource, VerificationReport
 from behavry_verify.witness import WitnessOptions, check_witness
@@ -385,6 +386,7 @@ def verify_package(
     carry a ``witness``, and under ``require``; otherwise nothing is added.
     """
     report = VerificationReport(trust_source=trust_source)
+    history_mark = history_start(anchor)
     heads = list(anchor_heads or [])
     head_folders: list[tuple[str, list[int]]] = []
     for name, records in anchor_head_dirs or []:
@@ -395,6 +397,7 @@ def verify_package(
     if not isinstance(manifest, dict):
         report.error = "package has no usable manifest.json"
         report.add_fail("manifest", "Manifest present", report.error)
+        attach_history(report, anchor, history_mark)
         return report.finalize()
 
     # Manifest metadata is echoed even on failure: an auditor needs to know
@@ -424,9 +427,14 @@ def verify_package(
         timeline = []
 
     # -- 1. Manifest signature ------------------------------------------------
-    public_key, key_entry = _resolve_key(report, manifest, anchor, raw_public_key)
+    public_key, key_entry, outside_window = _resolve_key(
+        report, manifest, anchor, raw_public_key
+    )
     signature_ok = False
-    if public_key is None:
+    if outside_window:
+        # AG-11: signed outside the key's window, or after its compromise.
+        report.add_fail("signature", "Signature valid", str(report.error))
+    elif public_key is None:
         report.add_skip(
             "signature",
             "Signature valid",
@@ -582,6 +590,7 @@ def verify_package(
             report, components, manifest, anchor, raw_public_key, heads, witness
         )
 
+    attach_history(report, anchor, history_mark)
     return report.finalize()
 
 
@@ -590,19 +599,25 @@ def _resolve_key(
     manifest: dict[str, Any],
     anchor: dict[str, Any] | None,
     raw_public_key: bytes | None,
-) -> tuple[bytes | None, dict[str, Any] | None]:
+) -> tuple[bytes | None, dict[str, Any] | None, bool]:
     if raw_public_key is not None:
-        return raw_public_key, None
+        return raw_public_key, None, False
     if anchor is None:
         report.error = "no trust anchor or public key was supplied"
-        return None, None
+        return None, None, False
     try:
-        return select_key_for_timestamp(
+        key, entry = select_key_for_timestamp(
             anchor, manifest.get("signer_kid"), manifest.get("created_at")
         )
+        return key, entry, False
+    except KeyWindowError as exc:
+        # AG-11: the key exists but did not sign this date, which is a
+        # failure of the signature, not a check that could not run.
+        report.error = str(exc)
+        return None, None, True
     except AnchorError as exc:
         report.error = str(exc)
-        return None, None
+        return None, None, False
 
 
 def _check_fingerprint(

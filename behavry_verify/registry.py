@@ -13,7 +13,9 @@ independent source. Every report says which path it took (see
 
 Anchors live as ``anchors/<name>.json`` files committed to this repo, so the
 set of published keys is auditable through git history rather than mutable at
-runtime.
+runtime. A ``behavry.trust_anchor.v2`` file (AG-11) is served whole for any of
+its kids, so its key windows are enforced, and its keys are left out of the
+aggregate v1 document.
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from behavry_verify.anchor import AnchorError, validate_anchor
+from behavry_verify.keyhistory import is_v2, trust_anchor_with_history
 
 __all__ = [
     "ANCHOR_DIR",
@@ -55,11 +58,15 @@ def load_registry(anchor_dir: str | None = None) -> dict[str, dict[str, Any]]:
             keys = validate_anchor(anchor)
         except (json.JSONDecodeError, AnchorError, OSError):
             continue
+        v2 = is_v2(anchor)
         for entry in keys:
             kid = entry.get("kid")
             if not kid or kid in registry:
                 continue
             registry[kid] = {**entry, "_source": path.name}
+            if v2:
+                # AG-11: a v2 file is served whole, so its windows still apply.
+                registry[kid]["_v2"] = path.name
     return registry
 
 
@@ -70,6 +77,13 @@ def anchor_for_kid(kid: str | None, anchor_dir: str | None = None) -> dict[str, 
     entry = load_registry(anchor_dir).get(kid)
     if entry is None:
         return None
+    if entry.get("_v2"):
+        directory = Path(anchor_dir) if anchor_dir else ANCHOR_DIR
+        try:
+            document = json.loads((directory / entry["_v2"]).read_text(encoding="utf-8"))
+            return trust_anchor_with_history(document)
+        except (json.JSONDecodeError, AnchorError, OSError):
+            return None
     published = {k: v for k, v in entry.items() if not k.startswith("_")}
     return {"schema": REGISTRY_SCHEMA, "keys": [published]}
 
@@ -82,9 +96,12 @@ def aggregate_anchor(anchor_dir: str | None = None) -> dict[str, Any]:
     a well-formed anchor document, even when no keys are published yet.
     """
     registry = load_registry(anchor_dir)
+    # Keys from a v2 file are left out: listed here without their statements
+    # they would verify outside their windows. anchor_for_kid serves them.
     keys = [
         {k: v for k, v in entry.items() if not k.startswith("_")}
         for entry in registry.values()
+        if not entry.get("_v2")
     ]
     return {
         "schema": REGISTRY_SCHEMA,

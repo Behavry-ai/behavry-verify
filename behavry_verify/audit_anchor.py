@@ -45,6 +45,7 @@ from typing import Any
 from cryptography import x509
 
 from behavry_verify.anchor import AnchorError, select_key_for_timestamp
+from behavry_verify.keyhistory import KeyWindowError, attach_history, history_start
 from behavry_verify.merkle import merkle_root
 from behavry_verify.package import _event_payload, _verify_ed25519
 from behavry_verify.report import TrustSource, VerificationReport
@@ -228,6 +229,7 @@ def verify_audit_anchor(
     reported as not validated, never as passed.
     """
     report = VerificationReport(trust_source=trust_source, kind="audit_anchor")
+    history_mark = history_start(anchor)
     if not isinstance(export, dict):
         report.error = "audit anchor export must be a JSON object"
         report.add_fail("anchor_format", "Anchor readable", report.error)
@@ -390,11 +392,16 @@ def verify_audit_anchor(
 
     # -- 3. Behavry's signature over those bytes ------------------------------
     key: bytes | None = raw_public_key
+    outside_window = False
     if key is None and anchor is not None:
         try:
             key, _ = select_key_for_timestamp(
                 anchor, export.get("signer_kid"), export.get("sealed_at")
             )
+        except KeyWindowError as exc:
+            # AG-11: sealed outside the key's window, or after its compromise.
+            report.error = str(exc)
+            outside_window = True
         except AnchorError as exc:
             report.error = str(exc)
     if not export.get("signature"):
@@ -406,6 +413,8 @@ def verify_audit_anchor(
             "the anchor carries no Behavry signature, so who sealed it is not proven "
             "(the Merkle root, digest and any TSA token are still checked)",
         )
+    elif outside_window:
+        report.add_fail("signature", "Anchor signature valid", str(report.error))
     elif key is None:
         report.add_skip(
             "signature",
@@ -495,6 +504,7 @@ def verify_audit_anchor(
     # -- 8. Witness receipt (AG-10) ----------------------------------------------
     if witness is not None:
         check_record_witness(report, export, witness, key)
+    attach_history(report, anchor, history_mark)
     return report.finalize()
 
 
