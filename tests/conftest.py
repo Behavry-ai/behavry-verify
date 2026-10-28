@@ -104,8 +104,9 @@ class PackageBuilder:
 
         ``agentless`` models browser / Human Governance events: no agent_id, and
         therefore no link pointer at all, because the producer only chains
-        per-agent. Under 1.0 rules such a package fails the walk outright, which
-        is the defect 1.1 exists to correct.
+        per-agent. Before Behavry AG-13 such a package failed the 1.0 walk
+        outright; agentless scopes are now checked by their links, and these
+        unlinked rows pass as history.
         """
         self.private_key = Ed25519PrivateKey.generate()
         self.public_key_bytes = self.private_key.public_key().public_bytes_raw()

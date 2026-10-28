@@ -263,17 +263,18 @@ def test_chain_walk_reports_every_break():
 # ---------------------------------------------------------------------------
 
 
-def test_agentless_package_fails_the_walk_under_1_0():
-    """The defect 1.1 corrects, pinned as a control.
+def test_agentless_package_no_longer_fails_the_walk_under_1_0():
+    """The defect 1.1 worked around, now fixed in the walk itself (Behavry AG-13 E-10).
 
-    Browser / Human Governance events carry no agent_id and therefore no link
-    pointer. Under 1.0 they share one chain key, so every event after the first
-    reports a break — an intact session declared tampered.
+    Browser / Human Governance events carry no agent_id. Before AG-13 they had
+    no link pointer and shared one timestamp-ordered chain key, so every event
+    after the first reported a break, an intact session declared tampered.
+    Agentless chains are now grouped per scope and checked by their links, and
+    unlinked rows are history, so the 1.0 walk passes the same session.
     """
     builder = PackageBuilder(event_count=3, agentless=True, package_version="1.0")
     report = verify(builder.components(), builder.anchor())
-    assert status_of(report, "chain") is CheckStatus.FAIL
-    assert not report.verified
+    assert status_of(report, "chain") is CheckStatus.PASS
 
 
 def test_agentless_package_verifies_under_1_1():
@@ -341,10 +342,15 @@ def test_package_version_parsing(raw, expected):
 
 
 def test_unreadable_version_takes_the_strict_path():
-    """A version we cannot parse must not buy the relaxed check."""
+    """A version we cannot parse must not buy the relaxed check.
+
+    The relaxed (1.1+) path skips the walk; the strict path runs it. Since
+    Behavry AG-13 the strict walk passes unlinked agentless rows, so "ran and
+    passed" rather than "failed" is what shows the strict path was taken.
+    """
     builder = PackageBuilder(event_count=3, agentless=True, package_version="not-a-version")
     report = verify(builder.components(), builder.anchor())
-    assert status_of(report, "chain") is CheckStatus.FAIL
+    assert status_of(report, "chain") is CheckStatus.PASS
 
 
 def test_device_claims_chain_separately_from_decisions():
