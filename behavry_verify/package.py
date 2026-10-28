@@ -280,7 +280,63 @@ def _chain_key(event: dict[str, Any]) -> tuple[str, Any]:
         return ("exp", event.get("device_id"))
     if claim_type == "disclosure_ack":
         return ("ack", event.get("device_id"))
+    if not event.get("agent_id"):
+        # Behavry AG-13 E-10: agentless decisions chain per scope (device,
+        # else user, else tenant) and are checked by their links.
+        return ("agl", (event.get("tenant_id") or "", agentless_tag(event)))
     return ("dec", event.get("agent_id"))
+
+
+def agentless_tag(event: dict[str, Any]) -> str:
+    """``dev:<device>``, ``usr:<16 hex SHA-256(user)>`` or ``ten`` (AG13-CONTRACTS §2).
+
+    An export names it in ``agentless_chain``, so a bundle that withholds
+    ``user_identifier`` still groups the chain.
+    """
+    if event.get("agentless_chain"):
+        return str(event["agentless_chain"])
+    if event.get("device_id"):
+        return f"dev:{event['device_id']}"
+    if event.get("user_identifier"):
+        digest = hashlib.sha256(str(event["user_identifier"]).encode("utf-8")).hexdigest()
+        return "usr:" + digest[:16]
+    return "ten"
+
+
+def agentless_chain_breaks(
+    key: tuple[str, Any], events: list[dict[str, Any]], *, allow_edge: bool = True
+) -> list[str]:
+    """Breaks in one agentless scope, by link structure rather than timestamp order.
+
+    Replayed client events (Behavry DCA-1) make timestamp order differ from
+    link order. The rows must form one path: no two name the same predecessor
+    (a fork), and none names an absent predecessor (a hole), except one at the
+    window's edge when ``allow_edge``. Rows with no predecessor that nothing
+    links to are genesis rows or history from before Behavry AG-13.
+    """
+    hashes = {e.get("event_hash") for e in events if e.get("event_hash")}
+    seen: set[str] = set()
+    holes: list[dict[str, Any]] = []
+    breaks: list[str] = []
+    for event in events:
+        previous = event.get("previous_hash")
+        if not previous:
+            continue
+        if previous in seen:
+            breaks.append(
+                f"chain {key[0]}:{key[1]!r} forks: two events name previous_hash={previous!r} "
+                f"(id={event.get('id')!r})"
+            )
+        seen.add(previous)
+        if previous not in hashes:
+            holes.append(event)
+    holes.sort(key=lambda e: e.get("timestamp") or "")
+    for event in holes[1:] if allow_edge else holes:
+        breaks.append(
+            f"chain {key[0]}:{key[1]!r} is missing the predecessor of event "
+            f"(id={event.get('id')!r}): previous_hash={event.get('previous_hash')!r}"
+        )
+    return breaks
 
 
 def _package_version_tuple(manifest: dict[str, Any]) -> tuple[int, ...]:
@@ -313,6 +369,9 @@ def walk_event_chain(events: list[dict[str, Any]]) -> list[str]:
 
     breaks: list[str] = []
     for key, chain in by_chain.items():
+        if key[0] == "agl":
+            breaks.extend(agentless_chain_breaks(key, chain))
+            continue
         chain.sort(key=lambda e: e.get("timestamp") or "")
         previous: str | None = None
         for position, event in enumerate(chain):

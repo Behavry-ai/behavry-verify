@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.13.0
+
+Sprint AG-13, following Behavry's `docs/strategy/AG13-CONTRACTS.md` section 2:
+agentless decision events are chained.
+
+### Changed
+
+- **Agentless decisions chain per scope.** A decision with no `agent_id` is
+  grouped by device (`dev:<device_id>`), else by user (`usr:<16 hex of
+  SHA-256 of the user>`), else by tenant (`ten`). An export names the scope
+  in `agentless_chain`, so a bundle that withholds `user_identifier` still
+  groups it. Before, all agentless decisions shared one chain key.
+- **Checked by links, not timestamp order.** Replayed client events make the
+  two differ. A scope fails on a fork (two events naming the same
+  predecessor) or a hole (an event naming an absent predecessor), except one
+  hole at the window's edge. Unlinked rows with no predecessor are history.
+- A 1.0 package of agentless events, whose unlinked rows used to fail the
+  walk, now passes it.
+
 ## 0.12.0
 
 Sprint AG-12, following Behavry's `docs/strategy/AG12-CONTRACTS.md` sections

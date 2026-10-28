@@ -301,6 +301,16 @@ From Behavry's AG-12 a tenant's key can be held in a KMS (Behavry's or the tenan
 
 `--public-key` still takes a raw Ed25519 key only; give a P-256 key in a trust anchor.
 
+
+### Agentless chains (0.13.0)
+
+Events with no agent (browser, admin and device records) chain from Behavry's AG-13 per scope: by device, else by user, else by tenant. An export names the scope in `agentless_chain` (`dev:<device>`, `usr:<16 hex of SHA-256 of the user>`, or `ten`), so a bundle that withholds user identities still groups it.
+
+Client events can be replayed after going offline, so their timestamps need not follow their links. Each scope is therefore checked by its links:
+- two events naming the same predecessor are a **fork**;
+- an event naming an absent predecessor is a **hole**, except one at the edge of the window;
+- unlinked rows with no predecessor are history from before chaining began.
+
 ### Passing Minotaur's key
 
 Minotaur publishes its observer public key as a small JSON file. One key signs both its observations and its assessment bundles:
@@ -352,7 +362,7 @@ Given two or more anchors for one tenant, the AUD-LINK back-pointers are also wa
 
 ### "No chain breaks" and package_version
 
-Behavry hashes its audit chain **per agent**, while an evidence package holds a **single session**. A session is therefore a slice of a longer chain, and its events need not link to each other: when an agent runs two sessions at once, the chains interleave, and browser-based events have no agent at all and so carry no link pointer.
+Behavry hashes its audit chain **per agent**, while an evidence package holds a **single session**. A session is therefore a slice of a longer chain, and its events need not link to each other: when an agent runs two sessions at once, the chains interleave. Browser-based events have no agent; until Behavry AG-13 they carried no link pointer, and since then they chain per device, user or tenant (see Agentless chains).
 
 Packages at `package_version` **1.0** claimed contiguity within the package, and this check enforced it. From **1.1** the producer states per-event integrity instead — a claim that holds for any slice — and the walk is reported `SKIPPED` as not applicable.
 
