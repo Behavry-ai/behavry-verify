@@ -9,7 +9,8 @@ third parties can verify its evidence without talking to Behavry. Wire format
       "keys": [
         {
           "kid": "<key id>",
-          "public_key": "<base64 32-byte raw Ed25519 point>",
+          "algorithm": "ed25519" | "ecdsa-p256",   (absent: ed25519)
+          "public_key": "<base64: 32 raw bytes (Ed25519) or SPKI DER (P-256)>",
           "not_before": "<ISO 8601>",
           "not_after": null
         }
@@ -28,11 +29,11 @@ validity window. A v1 anchor on its own is selected exactly as before.
 """
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 from datetime import UTC, datetime
 from typing import Any
+
+from behavry_verify.keys import KeyFormatError, PublicKey, decode_public_key
 
 __all__ = [
     "AnchorError",
@@ -51,22 +52,16 @@ class AnchorError(ValueError):
     """Raised when a trust anchor is malformed or holds no usable key."""
 
 
-def _decode_key(entry: dict[str, Any]) -> bytes:
-    raw = entry.get("public_key")
-    if not isinstance(raw, str) or not raw:
-        raise AnchorError(f"trust anchor key {entry.get('kid')!r} has no public_key")
+def _decode_key(entry: dict[str, Any]) -> PublicKey:
+    """The entry's public key, tagged with its ``algorithm`` (absent: Ed25519).
+
+    ``ed25519`` keys are base64 of the 32 raw bytes, ``ecdsa-p256`` keys base64
+    of the SPKI DER (AG12-CONTRACTS section 1). Any other algorithm is refused.
+    """
     try:
-        decoded = base64.b64decode(raw, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise AnchorError(
-            f"trust anchor key {entry.get('kid')!r} public_key is not valid base64"
-        ) from exc
-    if len(decoded) != ED25519_PUBLIC_KEY_BYTES:
-        raise AnchorError(
-            f"trust anchor key {entry.get('kid')!r} is {len(decoded)} bytes, "
-            f"expected {ED25519_PUBLIC_KEY_BYTES} for Ed25519"
-        )
-    return decoded
+        return decode_public_key(entry.get("algorithm"), entry.get("public_key"))
+    except KeyFormatError as exc:
+        raise AnchorError(f"trust anchor key {entry.get('kid')!r} {exc}") from exc
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -124,7 +119,7 @@ def _history_key(history: Any, kid: str) -> Any:
 
 def _select_from_history(
     history: Any, kid: str | None, ts: Any, *, enforce: bool
-) -> tuple[bytes, dict[str, Any]]:
+) -> tuple[PublicKey, dict[str, Any]]:
     """Key selection against a resolved key history (AG11-CONTRACTS section 4)."""
     if kid is not None:
         key = _history_key(history, kid)
@@ -160,7 +155,9 @@ def _select_from_history(
     return key.public_key, key.entry()
 
 
-def select_public_key(anchor: dict[str, Any], kid: str | None) -> tuple[bytes, dict[str, Any]]:
+def select_public_key(
+    anchor: dict[str, Any], kid: str | None
+) -> tuple[PublicKey, dict[str, Any]]:
     """Select a key by ``kid``, or the sole key when the anchor holds one.
 
     No timestamp is involved, so no window is enforced here: signature checks
@@ -186,7 +183,7 @@ def select_public_key(anchor: dict[str, Any], kid: str | None) -> tuple[bytes, d
 
 def select_key_for_timestamp(
     anchor: dict[str, Any], kid: str | None, ts: str | None
-) -> tuple[bytes, dict[str, Any]]:
+) -> tuple[PublicKey, dict[str, Any]]:
     """Pick the key valid at ``ts``, honouring the anchor's validity windows.
 
     A matching ``kid`` always wins. Otherwise, with several keys present, the
@@ -242,6 +239,11 @@ def summarize_anchor(anchor: dict[str, Any]) -> dict[str, Any]:
         "schema": anchor.get("schema"),
         "key_count": len(keys),
         "kids": [k.get("kid") for k in keys if isinstance(k, dict)],
+        "algorithms": {
+            str(k.get("kid")): k.get("algorithm") or "ed25519"
+            for k in keys
+            if isinstance(k, dict)
+        },
     }
 
 

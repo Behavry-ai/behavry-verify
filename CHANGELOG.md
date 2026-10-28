@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.12.0
+
+Sprint AG-12, following Behavry's `docs/strategy/AG12-CONTRACTS.md` sections
+1 to 4 and 7: ECDSA P-256 signing keys, for tenants whose key is held in a KMS.
+
+### Added
+
+- **`ecdsa-p256` keys** everywhere a key can come from: a v1 anchor's
+  `keys[]` (`"algorithm": "ecdsa-p256"`), a v2 anchor's keys, a key
+  statement's successor (`successor_algorithm` and `successor_public_key`),
+  and the published registry. The public key is base64 of the
+  SubjectPublicKeyInfo DER, which must hold a P-256 point. An entry with no
+  `algorithm` is an Ed25519 key, as before. A key with any other algorithm is
+  refused, and so is an anchor that lists one.
+- **Every signature check** (package manifests, events and their claim
+  variants, authorization records, provenance entries, audit anchors and
+  heads, key statements, and witness W2) verifies with the algorithm of the
+  key its kid names: Ed25519 as before, or ECDSA P-256 with SHA-256 over the
+  same message bytes, the signature base64 of its DER encoding. The algorithm
+  is never inferred from the signature or from a document's own
+  `signature_algorithm` field, so a P-256 signature under an Ed25519 key (or
+  the reverse) fails.
+- **Kid binding for P-256**: `t-<8 hex tenant>-ecdsa-p256-<16 hex>`, the last
+  part the first 16 hex characters of SHA-256 of the SPKI DER. The algorithm
+  named in a `t-...` kid must match `successor_algorithm`.
+- **Successions across algorithms**: an Ed25519 predecessor and a P-256
+  successor (or the reverse) each sign with their own algorithm, and each
+  signature in `signatures` is checked with its own key's.
+- **Witness W2 with a P-256 anchor key**: the leaf's verifier (a PKIX PEM) must
+  be the anchor's key, compared as SPKI DER for P-256 and as raw bytes for
+  Ed25519, and the DSSE envelope signature must verify over the PAE with that
+  key's algorithm. A verifier of the other algorithm fails W2 and says so.
+- Reports name each key's algorithm: the `signature` checks say "ECDSA P-256
+  over ..." or "Ed25519 over ...", `key_history.keys[]` carries `algorithm`,
+  and the text report's `Signing key` lines show it in brackets.
+
+### Unchanged
+
+- `--public-key` still takes a raw 32-byte Ed25519 key. Pass a P-256 key in a
+  trust anchor.
+- Observer anchors (Minotaur) are still Ed25519.
+
 ## 0.11.0
 
 Sprint AG-11, following Behavry's `docs/strategy/AG11-CONTRACTS.md` sections

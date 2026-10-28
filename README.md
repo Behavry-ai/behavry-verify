@@ -43,7 +43,7 @@ If a result matters, get the trust anchor from the issuing tenant directly. Thei
 ## What gets checked
 
 ```
-✓ Signature valid               Ed25519 over the canonical manifest
+✓ Signature valid               Ed25519 (or ECDSA P-256) over the canonical manifest
 ✓ Signer fingerprint matches    the anchor really is this package's signer
 ✓ Merkle root matches           recomputed over every event hash
 ✓ Event count verified          the timeline holds what the manifest claims
@@ -75,7 +75,7 @@ From `package_version` **1.2** the package exports every field each decision's h
 |---|---|---|
 | `file_digests` | Every data file (`timeline.json`, `authorization_records.json`, `observations.json`, ...) is byte-identical to what the signed manifest committed to | a listed file is missing or its SHA-256 differs |
 | `event_content` | Each decision event's `event_hash` reproduces from its own fields, under the `hash_version` (v1 to v8) it was written with | any field covered by the hash was changed; the report names the events. A 1.2 row stripped of its hashed fields also fails |
-| `authorization_records` | Each pre-forward authorization record's `record_hash` reproduces from its fields, its Ed25519 signature verifies under the same trust anchor as the events, and each decision's `authorization_hash` matches the record it names | a record was edited, signed by another key, missing, or re-pointed |
+| `authorization_records` | Each pre-forward authorization record's `record_hash` reproduces from its fields, its signature verifies under the same trust anchor as the events, and each decision's `authorization_hash` matches the record it names | a record was edited, signed by another key, missing, or re-pointed |
 | `observations` | Each independent observation was signed by the observer key you supplied, over a body that binds the decision event's hash | a signature is bad, or the observation points at a decision not in the timeline |
 
 Non-decision claims (`exposure`, `disclosure_ack`, `agent_report`, `host_journal`) are not content-recomputed; the report says so, and their hashes stay covered by the Merkle root, their signatures and the file digests.
@@ -264,7 +264,7 @@ The report's `witness` key holds one row per record:
 
 ### Key rotation and key history (0.11.0)
 
-From Behavry's AG-11 each tenant signs with its own Ed25519 key, and the key can rotate. Every change is a **key statement** (`behavry.key_statement.v1`) that names the predecessor and the successor and the time it takes effect:
+From Behavry's AG-11 each tenant signs with its own key (Ed25519, or from 0.12.0 ECDSA P-256), and the key can rotate. Every change is a **key statement** (`behavry.key_statement.v1`) that names the predecessor and the successor and the time it takes effect:
 
 - a `succession` (a rotation, or the tenant's first key, introduced from the deployment key with reason `infrastructure_migration`) is signed by **both** keys, so neither key alone can introduce the other;
 - a `compromise` is signed by the successor and the **deployment key**, since the compromised key's own signature proves nothing, and it marks the old key compromised from `compromised_since`.
@@ -282,6 +282,24 @@ There are two ways to give the verifier a key history:
 The third row is for an auditor who pinned a tenant's anchor before the tenant rotated: fetch the tenant's current history (`GET /api/v1/public/tenants/{tenant_id}/signing-keys`, or the admin's `trust-anchor-v2.json`) and pass it with the anchor you already hold. No new trust decision is needed, because every new key is vouched for by one you already trust.
 
 The report's `key_history` key (present only in the `v2` and `v1+history` modes) lists each usable key with its recomputed window and status (`active`, `retired`, `revoked`) and where it came from (`pinned`, `anchor`, `history`); each statement and whether it verified, with the problems when not; the unreachable keys and why; and the signatures that failed a window (`window_failures`) or fell after a compromise (`untrusted_signatures`). The text report adds `Key history`, `Signing key`, `Key statement`, `Unreachable key`, `Key compromised` and `Key window` lines.
+
+### ECDSA P-256 keys (0.12.0)
+
+From Behavry's AG-12 a tenant's key can be held in a KMS (Behavry's or the tenant's own). Such a key is ECDSA over NIST P-256 with SHA-256, and it signs exactly the bytes an Ed25519 key would: records, anchors, manifests, key statements and the witness envelope. In a trust anchor it looks like this:
+
+```json
+{"kid": "t-dae96c58-ecdsa-p256-9a03c1e7f2b84d60", "algorithm": "ecdsa-p256",
+ "public_key": "<base64 SubjectPublicKeyInfo DER>", "custody": "behavry_kms"}
+```
+
+- The kid's last part is the first 16 hex characters of SHA-256 of the SPKI DER (of the 32 raw bytes for an Ed25519 key).
+- A signature is base64 of the DER-encoded ECDSA signature (`SEQUENCE { r, s }`).
+- Every signature is checked with the algorithm of the key its kid names, never one guessed from the signature. An entry without `algorithm` is Ed25519; any algorithm other than `ed25519` or `ecdsa-p256` is refused.
+- A rotation may change algorithm. A key statement from an Ed25519 key to a P-256 key is signed by both, each with its own algorithm, and the verifier checks each signature that way.
+- For check 16, the receipt's verifier is the key's PKIX PEM and must be the same key as the anchor's (compared as SPKI DER).
+- `custody` (`deployment`, `local`, `behavry_kms`, `customer_kms`) is informational and not signed.
+
+`--public-key` still takes a raw Ed25519 key only; give a P-256 key in a trust anchor.
 
 ### Passing Minotaur's key
 
@@ -307,7 +325,7 @@ An evidence package proves that the holder of a key vouched for a record. That c
 ✓ Event count verified                     every record in the period is present
 ✓ First and last event hashes match
 ✓ Anchor digest matches                    SHA-256 of the canonical anchor bytes
-✓ Anchor signature valid                   Behavry's Ed25519 signature over those bytes
+✓ Anchor signature valid                   Behavry's Ed25519 or P-256 signature over those bytes
 ✓ Event signatures valid                   each anchored event's own signature
 ✓ RFC 3161 token covers the anchor digest  the token's message imprint, genTime, serial
 ✓ TSA signature valid                      the TSA's CMS signature over the token

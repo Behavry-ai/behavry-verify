@@ -1,18 +1,21 @@
 """Key history: trust anchor v2, key statements and validity windows (AG-11).
 
-From AG-11 a Behavry tenant signs with its own Ed25519 key, and every change
-of that key is a signed **key statement** (``behavry.key_statement.v1``)::
+From AG-11 a Behavry tenant signs with its own key, and every change of that
+key is a signed **key statement** (``behavry.key_statement.v1``)::
 
     {"schema": "behavry.key_statement.v1", "type": "succession" | "compromise",
      "tenant_id": ..., "predecessor_kid": ..., "successor_kid": ...,
-     "successor_algorithm": "ed25519", "successor_public_key": "<base64 raw>",
+     "successor_algorithm": "ed25519" | "ecdsa-p256",
+     "successor_public_key": "<base64 raw (Ed25519) or SPKI DER (P-256)>",
      "effective_at": ..., "reason": ..., "compromised_since": null | ...,
      "issued_at": ..., "signatures": [{"kid": ..., "sig": ...}]}
 
 The signed bytes are the statement without ``signatures``, as compact JSON with
 sorted keys. A ``succession`` is signed by both the predecessor and the
 successor; a ``compromise`` by the successor and the deployment key, since the
-compromised key's own signature proves nothing.
+compromised key's own signature proves nothing. From AG-12 the keys may be
+Ed25519 or ECDSA P-256, and a succession may cross algorithms: each signature
+is checked with the algorithm of the key its kid names.
 
 A statement closes the predecessor's window at ``effective_at`` and opens the
 successor's there; a ``compromise`` also marks the predecessor compromised
@@ -37,19 +40,21 @@ its own never reaches this module: no window is enforced, exactly as before.
 """
 from __future__ import annotations
 
-import base64
-import binascii
-import hashlib
 import json
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
 from behavry_verify.anchor import AnchorError, _decode_key
+from behavry_verify.keys import (
+    ALGORITHMS,
+    KeyFormatError,
+    PublicKey,
+    decode_public_key,
+    key_fingerprint_hex,
+    verify_signature,
+)
 
 __all__ = [
     "ANCHOR_V2_SCHEMA",
@@ -85,8 +90,9 @@ MODE_V1_HISTORY = "v1+history"
 COMPROMISE_REASON = "suspected_compromise"
 REASONS = frozenset({"infrastructure_migration", "scheduled_rotation", COMPROMISE_REASON})
 
-#: ``t-<first 8 of the tenant UUID, no dashes>-ed25519-<16 hex of SHA-256(raw key)>``.
-_TENANT_KID = re.compile(r"^t-([0-9a-f]{8})-ed25519-([0-9a-f]{16})$")
+#: ``t-<first 8 of the tenant UUID, no dashes>-<algorithm>-<16 hex of SHA-256(key)>``:
+#: the key is the 32 raw bytes for ``ed25519``, the SPKI DER for ``ecdsa-p256``.
+_TENANT_KID = re.compile(r"^t-([0-9a-f]{8})-(ed25519|ecdsa-p256)-([0-9a-f]{16})$")
 
 UNTRUSTED_COMPROMISED = "untrusted (key compromised)"
 
@@ -131,13 +137,17 @@ class HistoryKey:
 
     kid: str
     public_key_b64: str
-    public_key: bytes
+    public_key: PublicKey
     source: str
     """``pinned`` (the v1 anchor), ``anchor`` (a v2 anchor) or ``history``."""
     not_before: datetime | None = None
     not_after: datetime | None = None
     compromised_since: datetime | None = None
     listed: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def algorithm(self) -> str:
+        return self.public_key.algorithm
 
     @property
     def status(self) -> str:
@@ -157,7 +167,7 @@ class HistoryKey:
         """An anchor-style key entry carrying the recomputed window."""
         return {
             "kid": self.kid,
-            "algorithm": "ed25519",
+            "algorithm": self.algorithm,
             "public_key": self.public_key_b64,
             "status": self.status,
             "not_before": _iso(self.not_before),
@@ -296,28 +306,27 @@ def _key_from_entry(entry: dict[str, Any], source: str) -> HistoryKey:
     )
 
 
-def _decode_successor(statement: dict[str, Any]) -> bytes | None:
-    raw = statement.get("successor_public_key")
-    if not isinstance(raw, str) or not raw:
-        return None
+def _decode_successor(statement: dict[str, Any]) -> tuple[PublicKey | None, str | None]:
+    """The successor key with its algorithm, or ``None`` and why not."""
     try:
-        decoded = base64.b64decode(raw, validate=True)
-    except (binascii.Error, ValueError):
-        return None
-    return decoded if len(decoded) == 32 else None
+        return (
+            decode_public_key(
+                statement.get("successor_algorithm"), statement.get("successor_public_key")
+            ),
+            None,
+        )
+    except KeyFormatError as exc:
+        return None, f"successor_public_key: the successor key {exc}"
 
 
-def _signature_ok(statement: dict[str, Any], kid: str, key: bytes) -> bool:
+def _signature_ok(statement: dict[str, Any], kid: str, key: PublicKey) -> bool:
+    """A signature by ``kid``, checked with ``key``'s own algorithm."""
     signed = statement_signing_bytes(statement)
     for row in statement.get("signatures") or []:
         if not isinstance(row, dict) or row.get("kid") != kid:
             continue
-        try:
-            sig = base64.b64decode(str(row.get("sig") or ""), validate=True)
-            Ed25519PublicKey.from_public_bytes(key).verify(sig, signed)
-        except (binascii.Error, ValueError, InvalidSignature):
-            continue
-        return True
+        if verify_signature(key, str(row.get("sig") or ""), signed):
+            return True
     return False
 
 
@@ -379,23 +388,34 @@ def _walk(
             )
         if statement.get("reason") not in REASONS:
             problems.append(f"reason {statement.get('reason')!r} is not one of {sorted(REASONS)}")
-        if statement.get("successor_algorithm") != "ed25519":
+        successor_algorithm = statement.get("successor_algorithm")
+        if successor_algorithm not in ALGORITHMS:
             problems.append(
-                f"successor_algorithm {statement.get('successor_algorithm')!r} is not ed25519"
+                f"successor_algorithm {successor_algorithm!r} is not one of "
+                f"{', '.join(ALGORITHMS)}"
             )
         if not isinstance(succ_kid, str) or not succ_kid:
             problems.append("it names no successor_kid")
-        successor_key = _decode_successor(statement)
-        if successor_key is None:
-            problems.append("successor_public_key is not a base64 32-byte Ed25519 key")
+        successor_key, successor_problem = _decode_successor(statement)
+        if successor_key is None and successor_algorithm in ALGORITHMS:
+            problems.append(str(successor_problem))
 
-        # The successor kid must be derived from its key (section 1).
+        # The successor kid must be derived from its key (AG-11 and AG-12
+        # section 1): raw bytes for Ed25519, SPKI DER for P-256.
         if isinstance(succ_kid, str) and successor_key is not None:
             match = _TENANT_KID.match(succ_kid)
             if succ_kid.startswith("t-") and match is None:
-                problems.append(f"successor kid {succ_kid!r} is not t-<8 hex>-ed25519-<16 hex>")
+                problems.append(
+                    f"successor kid {succ_kid!r} is not "
+                    "t-<8 hex>-(ed25519|ecdsa-p256)-<16 hex>"
+                )
             elif match is not None:
-                if match.group(2) != hashlib.sha256(successor_key).hexdigest()[:16]:
+                if match.group(2) != successor_key.algorithm:
+                    problems.append(
+                        f"successor kid {succ_kid!r} names algorithm {match.group(2)}, but "
+                        f"successor_algorithm is {successor_key.algorithm}"
+                    )
+                if match.group(3) != key_fingerprint_hex(successor_key):
                     problems.append(
                         f"successor kid {succ_kid!r} is not derived from successor_public_key"
                     )
@@ -406,12 +426,13 @@ def _walk(
                         f"{statement.get('tenant_id')!r}"
                     )
             listed = offered.get(succ_kid)
-            if listed is not None and listed.get("public_key") != statement.get(
-                "successor_public_key"
+            if listed is not None and (
+                listed.get("public_key") != statement.get("successor_public_key")
+                or (listed.get("algorithm") or "ed25519") != successor_key.algorithm
             ):
                 problems.append(
-                    f"the history lists {succ_kid!r} with a different public key than the "
-                    "statement introduces"
+                    f"the history lists {succ_kid!r} with a different public key or "
+                    "algorithm than the statement introduces"
                 )
 
         predecessor = trusted.get(pred_kid) if isinstance(pred_kid, str) else None
@@ -605,7 +626,10 @@ def resolve_with_history(pinned: Any, history: Any) -> KeyHistory:
             notes.append("the key history lists a key with no kid; ignored")
             continue
         if kid in trusted:
-            if entry.get("public_key") != trusted[kid].public_key_b64:
+            if (
+                entry.get("public_key") != trusted[kid].public_key_b64
+                or (entry.get("algorithm") or "ed25519") != trusted[kid].algorithm
+            ):
                 notes.append(
                     f"the key history lists pinned kid {kid!r} with a different public key; "
                     "the pinned key is used"
