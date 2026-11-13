@@ -74,7 +74,7 @@ From `package_version` **1.2** the package exports every field each decision's h
 | Check | What it proves | Fails when |
 |---|---|---|
 | `file_digests` | Every data file (`timeline.json`, `authorization_records.json`, `observations.json`, ...) is byte-identical to what the signed manifest committed to | a listed file is missing or its SHA-256 differs |
-| `event_content` | Each decision event's `event_hash` reproduces from its own fields, under the `hash_version` (v1 to v8) it was written with | any field covered by the hash was changed; the report names the events. A 1.2 row stripped of its hashed fields also fails |
+| `event_content` | Each decision event's `event_hash` reproduces from its own fields, under the `hash_version` (v1 to v9) it was written with | any field covered by the hash was changed; the report names the events. A 1.2 row stripped of its hashed fields also fails |
 | `authorization_records` | Each pre-forward authorization record's `record_hash` reproduces from its fields, its signature verifies under the same trust anchor as the events, and each decision's `authorization_hash` matches the record it names | a record was edited, signed by another key, missing, or re-pointed |
 | `observations` | Each independent observation was signed by the observer key you supplied, over a body that binds the decision event's hash | a signature is bad, or the observation points at a decision not in the timeline |
 
@@ -533,7 +533,7 @@ These modules must match the Behavry producer byte-for-byte, or valid evidence s
 
 - `behavry_verify/canonical.py` ↔ `backend/behavry/audit/signer.py` and `backend/behavry/apr/packages.py`
 - `behavry_verify/merkle.py` ↔ `backend/behavry/apr/packages.py`
-- `behavry_verify/hashbody.py` ↔ `backend/behavry/audit/service.py` (decision body v1 to v8), `backend/behavry/audit/evidence.py` (authorization and observation bodies), `backend/behavry/core/security.py` and `backend/behavry/audit/signer.py`
+- `behavry_verify/hashbody.py` ↔ `backend/behavry/audit/service.py` (decision body v1 to v9), `backend/behavry/audit/evidence.py` (authorization and observation bodies), `backend/behavry/core/security.py` and `backend/behavry/audit/signer.py`
 - `behavry_verify/jcs.py` ↔ `backend/behavry/audit/args_digest.py` (RFC 8785, copied exactly, including its error behaviour)
 - `behavry_verify/authority.py` ↔ `backend/behavry/authority/provenance.py` and the assessment bundle form in Behavry's `docs/strategy/AG3-CONTRACTS.md` §1.2
 - `behavry_verify/audit_anchor.py` ↔ `backend/behavry/audit/anchoring.py` and `tools/verify_event.py --anchor` / `--anchor-chain`; the v3 form follows Behavry's `docs/strategy/AG4-CONTRACTS.md` §1 and §2

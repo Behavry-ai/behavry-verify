@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.14.0
+
+Decision `hash_version` 9 (Behavry Sprint MSP-1, producer commit `b6f344d8`,
+2026-10-23).
+
+### Fixed
+
+- **v9 decision rows verify.** The producer has written v9 rows since the
+  per-tenant enforcement posture shipped. v9 adds `enforcement_posture` and
+  `observed_verdict` to the hashed body. 0.13.0 stopped at v8 and failed every
+  v9 row closed ("cannot rebuild newer hash_version ... upgrade
+  behavry-verify"), so a current 1.2+ package reported NOT VERIFIED.
+  `event_content` now rebuilds v9, and editing either field on an exported row
+  fails the check.
+
+### Tests
+
+- `tests/vectors/producer_vectors.json` regenerated from the producer
+  (`generate_vectors.py` adds an enforcing and a monitoring v9 row). v1 to v8
+  vectors are byte-identical.
+- v9 tamper tests for `enforcement_posture` and `observed_verdict`. The
+  future-version test now uses `MAX_DECISION_HASH_VERSION + 1`.
+
 ## 0.13.0
 
 Sprint AG-13, following Behavry's `docs/strategy/AG13-CONTRACTS.md` section 2:

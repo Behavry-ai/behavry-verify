@@ -2,7 +2,7 @@
 
 ``tests/vectors/producer_vectors.json`` was written by the Behavry backend's
 OWN functions (see ``tests/vectors/generate_vectors.py`` for exactly which),
-over decision rows at every hash_version v1..v8, an authorization record and
+over decision rows at every hash_version v1..v9, an authorization record and
 an observation. These tests assert that this repo's independent port in
 :mod:`behavry_verify.hashbody` reproduces every byte.
 
@@ -39,7 +39,8 @@ DECISIONS = VECTORS["decisions"]
 
 
 def test_vectors_cover_every_hash_version():
-    assert sorted(d["exported"]["hash_version"] for d in DECISIONS) == [1, 2, 3, 4, 5, 6, 7, 8]
+    versions = sorted(d["exported"]["hash_version"] for d in DECISIONS)
+    assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 9]
 
 
 @pytest.mark.parametrize(
@@ -110,3 +111,25 @@ def test_producer_rows_pass_the_package_checks():
     assert statuses["event_content"] is CheckStatus.PASS, report.to_text()
     assert statuses["authorization_records"] is CheckStatus.PASS, report.to_text()
     assert statuses["observations"] is CheckStatus.PASS, report.to_text()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("enforcement_posture", "enforce"),
+        ("observed_verdict", None),
+        ("observed_verdict", "escalate"),
+    ],
+)
+def test_v9_monitor_fields_are_bound(field, value):
+    """A monitor-mode call let through cannot be relabelled after the fact.
+
+    v9 exists so "allowed because the tenant was monitoring" stays
+    distinguishable from "allowed": editing the posture or the would-be
+    verdict on an exported row must change the recomputed hash.
+    """
+    vector = next(d for d in DECISIONS if d["exported"]["id"] == "evt-v9-monitor")
+    row = dict(vector["exported"])
+    assert recompute_decision_event_hash(row) == row["event_hash"]
+    row[field] = value
+    assert recompute_decision_event_hash(row) != row["event_hash"]
