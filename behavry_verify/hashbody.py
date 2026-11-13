@@ -64,7 +64,7 @@ __all__ = [
 
 #: Highest decision ``hash_version`` this verifier can rebuild. Mirrors
 #: ``CURRENT_DECISION_HASH_VERSION`` in ``backend/behavry/audit/service.py``.
-MAX_DECISION_HASH_VERSION = 8
+MAX_DECISION_HASH_VERSION = 9
 
 #: Mirrors ``backend/behavry/audit/evidence.py::AUTHORIZATION_CLAIM``.
 AUTHORIZATION_CLAIM = "authorization"
@@ -211,6 +211,9 @@ def decision_canonical_body(event: dict[str, Any]) -> str:
     * v8 (Sprint AG-1): + :data:`V8_DECISION_FIELDS` (tool_name, mcp_server,
       policy_id, the OPA input / policy bundle / response digests, the
       authorization binding, execution_status)
+    * v9 (Sprint MSP-1): + enforcement_posture (the tenant's posture when the
+      decision was made) and observed_verdict (what enforcement would have done,
+      set only when monitor mode let the call through)
     """
     version = decision_hash_version(event)
     body: dict[str, Any] = {
@@ -253,6 +256,9 @@ def decision_canonical_body(event: dict[str, Any]) -> str:
     if version >= 8:
         for field in V8_DECISION_FIELDS:
             body[field] = event.get(field)
+    if version >= 9:
+        body["enforcement_posture"] = event.get("enforcement_posture")
+        body["observed_verdict"] = event.get("observed_verdict")
     return json.dumps(body, sort_keys=True)
 
 

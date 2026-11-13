@@ -16,6 +16,7 @@ import zipfile
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from behavry_verify.hashbody import MAX_DECISION_HASH_VERSION
 from behavry_verify.package import load_package_from_bytes, verify_package
 from behavry_verify.report import CheckStatus, TrustSource
 from tests.conftest import PackageBuilder
@@ -180,7 +181,7 @@ def test_flipping_claim_type_to_dodge_recompute_is_caught(b12):
 
 def test_future_hash_version_fails_with_upgrade_hint(b12):
     components = b12.components()
-    components["timeline.json"][0]["hash_version"] = 9  # first version past v8
+    components["timeline.json"][0]["hash_version"] = MAX_DECISION_HASH_VERSION + 1
     report = verify(components, b12)
     content = check(report, "event_content")
     assert content.status is CheckStatus.FAIL

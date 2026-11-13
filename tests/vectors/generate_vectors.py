@@ -64,7 +64,7 @@ _ALL_ROW_FIELDS = (
     "inbound_findings", "injection_findings", "injection_max_severity",
     "args_digest", "opa_input_digest", "policy_bundle_digest",
     "authorization_record_id", "authorization_hash", "execution_status",
-    "response_digest",
+    "response_digest", "enforcement_posture", "observed_verdict",
 )
 
 
@@ -101,6 +101,8 @@ def _producer_canonical(row: SimpleNamespace) -> str:
         run_label=row.run_label,
         args_digest=row.args_digest,
         **v8_fields_for_row(row),
+        enforcement_posture=row.enforcement_posture,
+        observed_verdict=row.observed_verdict,
     )
 
 
@@ -185,6 +187,18 @@ def main() -> None:
              authorization_record_id=authz.id, authorization_hash=authz.record_hash,
              execution_status="success", response_digest="sha256:" + "f" * 64,
              **common),
+        # v9 (Sprint MSP-1): an enforcing tenant, and a monitoring tenant whose
+        # call was let through although enforcement would have denied it.
+        _row(id="evt-v9-enforce", hash_version=9, policy_result="deny",
+             timestamp=datetime(2026, 9, 1, 12, 0, 7, 125000, tzinfo=UTC),
+             target="/etc/payment-config.yaml", previous_hash="8" * 64,
+             args_digest="fedcba9876543210" * 4, execution_status="not_forwarded",
+             enforcement_posture="enforce", observed_verdict=None, **common),
+        _row(id="evt-v9-monitor", hash_version=9, policy_result="allow",
+             timestamp=datetime(2026, 9, 1, 12, 0, 8, tzinfo=UTC),  # zero micros
+             target="/etc/payment-config.yaml", previous_hash="a" * 64,
+             args_digest="fedcba9876543210" * 4, execution_status="success",
+             enforcement_posture="monitor", observed_verdict="deny", **common),
     ]
 
     decisions = []
@@ -201,7 +215,7 @@ def main() -> None:
 
     # -- observation (E-3) of the v8 decision, zero-microsecond observed_at.
     observed_at = normalize_hashed_time(datetime(2026, 9, 1, 12, 0, 9, tzinfo=UTC))
-    v8 = rows[-1]
+    v8 = next(r for r in rows if r.id == "evt-v8")
     obs_body = observation_canonical_body(
         tenant_id=TENANT, decision_event_id=v8.id, decision_event_hash=v8.event_hash,
         observer_type="minotaur", observer_id="minotaur-01",
